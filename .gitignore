@@ -1,0 +1,20 @@
+# macOS
+.DS_Store
+
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Lockfiles (using pnpm)
+package-lock.json
+
+# Reference upstream Python project (kept locally only)
+parakeet-mlx/
+
+# Working notes
+autonomous-progress.md
+autonomous-prompt.md
+autonomous-review.md
+status.md
