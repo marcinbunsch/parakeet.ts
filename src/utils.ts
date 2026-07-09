@@ -142,6 +142,7 @@ async function downloadFromHub(
   repoId: string,
   filename: string,
   cacheDir?: string,
+  onProgress?: (downloaded: number, total: number) => void,
 ): Promise<string> {
   const effectiveCacheDir = cacheDir ?? path.join(
     process.env['HOME'] ?? '/tmp',
@@ -161,15 +162,43 @@ async function downloadFromHub(
   // Download directly from HuggingFace CDN (Node 18+ has built-in fetch)
   const url = `https://huggingface.co/${repoId}/resolve/main/${filename}`;
   const response = await fetch(url, {
-    headers: { 'User-Agent': 'parakeet-mlx-ts/0.1.0' },
+    headers: { 'User-Agent': 'parakeet-mlx/1.0.0' },
   });
 
   if (!response.ok) {
     throw new Error(`Failed to download ${url}: ${response.status} ${response.statusText}`);
   }
 
-  const arrayBuffer = await response.arrayBuffer();
-  fs.writeFileSync(localPath, Buffer.from(arrayBuffer));
+  const total = parseInt(response.headers.get('content-length') ?? '0', 10);
+
+  if (onProgress && response.body) {
+    // Stream with progress reporting
+    const tmpPath = `${localPath}.tmp`;
+    const writeStream = fs.createWriteStream(tmpPath);
+    let downloaded = 0;
+
+    const reader = response.body.getReader();
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        writeStream.write(value);
+        downloaded += value.byteLength;
+        onProgress(downloaded, total);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      writeStream.end((err?: Error | null) => (err ? reject(err) : resolve()));
+    });
+    fs.renameSync(tmpPath, localPath);
+  } else {
+    const arrayBuffer = await response.arrayBuffer();
+    fs.writeFileSync(localPath, Buffer.from(arrayBuffer));
+  }
+
   return localPath;
 }
 
@@ -401,19 +430,25 @@ export function fromLocal(modelDir: string): BaseParakeet {
  * @param hfIdOrPath - HuggingFace repo ID (e.g. "mlx-community/parakeet-tdt-0.6b-v3")
  *                     or local directory path.
  * @param options.cacheDir - Override default HF cache directory.
+ * @param options.onProgress - Called with (downloaded, total) bytes during file downloads.
  */
 export async function fromPretrained(
   hfIdOrPath: string,
-  options: { cacheDir?: string } = {},
+  options: { cacheDir?: string; onProgress?: (file: string, downloaded: number, total: number) => void } = {},
 ): Promise<BaseParakeet> {
   // Check if it's a local path
   if (fs.existsSync(hfIdOrPath) && fs.statSync(hfIdOrPath).isDirectory()) {
     return fromLocal(hfIdOrPath);
   }
 
+  const makeProgress = (file: string) =>
+    options.onProgress
+      ? (downloaded: number, total: number) => options.onProgress!(file, downloaded, total)
+      : undefined;
+
   // Download from HuggingFace Hub
-  const configPath = await downloadFromHub(hfIdOrPath, 'config.json', options.cacheDir);
-  const weightsPath = await downloadFromHub(hfIdOrPath, 'model.safetensors', options.cacheDir);
+  const configPath = await downloadFromHub(hfIdOrPath, 'config.json', options.cacheDir, makeProgress('config.json'));
+  const weightsPath = await downloadFromHub(hfIdOrPath, 'model.safetensors', options.cacheDir, makeProgress('model.safetensors'));
 
   const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
   const model = parseConfig(config);

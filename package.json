@@ -1,14 +1,21 @@
 {
-  "name": "parakeet-mlx-ts",
-  "version": "0.1.0",
-  "description": "TypeScript port of parakeet-mlx: Nvidia Parakeet ASR on Apple Silicon",
+  "name": "parakeet-mlx",
+  "version": "1.0.0",
+  "description": "Community TypeScript port of parakeet-mlx: Nvidia Parakeet ASR on Apple Silicon (not affiliated with NVIDIA)",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "bin": {
+    "parakeet-mlx": "./dist/cli.js"
+  },
   "exports": {
     ".": {
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
+    },
+    "./server": {
+      "import": "./dist/server.js",
+      "types": "./dist/server.d.ts"
     }
   },
   "scripts": {
@@ -19,12 +26,21 @@
   "dependencies": {
     "@mlx-node/core": "^0.0.7"
   },
+  "peerDependencies": {
+    "hono": "^4"
+  },
+  "peerDependenciesMeta": {
+    "hono": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "hono": "^4.12.18",
     "typescript": "^5.5.0",
     "vitest": "^4.1.5"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=18.11.0"
   }
 }

@@ -25,6 +25,7 @@ export {
   beam,
   defaultDecodingConfig,
   TranscribeOptions,
+  consumePcmStream,
 } from './parakeet.js';
 
 // Alignment types

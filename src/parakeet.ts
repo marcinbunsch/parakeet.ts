@@ -125,6 +125,34 @@ export interface TranscribeOptions {
 }
 
 // ---------------------------------------------------------------------------
+// Async mutex (per-instance concurrency safety)
+// ---------------------------------------------------------------------------
+
+class AsyncMutex {
+  private _locked = false;
+  private _queue: Array<() => void> = [];
+
+  acquire(): Promise<() => void> {
+    return new Promise<() => void>(resolve => {
+      if (!this._locked) {
+        this._locked = true;
+        resolve(this._release.bind(this));
+      } else {
+        this._queue.push(() => resolve(this._release.bind(this)));
+      }
+    });
+  }
+
+  private _release(): void {
+    if (this._queue.length > 0) {
+      this._queue.shift()!();
+    } else {
+      this._locked = false;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Base class
 // ---------------------------------------------------------------------------
 
@@ -132,12 +160,18 @@ export abstract class BaseParakeet extends Module {
   readonly preprocessorConfig: PreprocessArgs;
   readonly encoderConfig: ConformerArgs;
   readonly encoder: Conformer;
+  private readonly _mutex = new AsyncMutex();
 
   constructor(preprocessorConfig: PreprocessArgs, encoderConfig: ConformerArgs) {
     super();
     this.preprocessorConfig = preprocessorConfig;
     this.encoderConfig = encoderConfig;
     this.encoder = new Conformer(encoderConfig);
+  }
+
+  /** Acquire the encoder mutex. Used internally by transcribe/transcribeStream. */
+  _acquireMutex(): Promise<() => void> {
+    return this._mutex.acquire();
   }
 
   get timeRatio(): number {
@@ -151,6 +185,18 @@ export abstract class BaseParakeet extends Module {
   abstract generate(mel: MxArray, decodingConfig?: DecodingConfig): AlignedResult[];
 
   async transcribe(
+    path: string,
+    options: TranscribeOptions = {},
+  ): Promise<AlignedResult> {
+    const release = await this._acquireMutex();
+    try {
+      return await this._transcribeInner(path, options);
+    } finally {
+      release();
+    }
+  }
+
+  private async _transcribeInner(
     path: string,
     options: TranscribeOptions = {},
   ): Promise<AlignedResult> {
@@ -439,8 +485,9 @@ export class StreamingParakeet {
   private melBuffer: MxArray | null = null;
   private decoderHidden: [MxArray, MxArray] | null = null;
   private lastToken: number | null = null;
-  private finalizedTokens: AlignedToken[] = [];
-  private draftTokens: AlignedToken[] = [];
+  private _finalizedTokens: AlignedToken[] = [];
+  private _draftTokens: AlignedToken[] = [];
+  private _releaseMutex: (() => void) | null = null;
 
   constructor(
     model: BaseParakeet,
@@ -469,7 +516,8 @@ export class StreamingParakeet {
     return this.contextSize[1] * this.depth;
   }
 
-  start(): void {
+  async start(): Promise<void> {
+    this._releaseMutex = await this.model._acquireMutex();
     if (!this.keepOriginalAttention) {
       this.model.encoder.setAttentionModel('rel_pos_local_attn', this.contextSize);
     }
@@ -479,12 +527,34 @@ export class StreamingParakeet {
     if (!this.keepOriginalAttention) {
       this.model.encoder.setAttentionModel('rel_pos');
     }
+    if (this._releaseMutex) {
+      this._releaseMutex();
+      this._releaseMutex = null;
+    }
   }
 
+  /** Committed tokens — will not be revised on future addAudio calls. */
+  get finalizedTokens(): AlignedToken[] {
+    return [...this._finalizedTokens];
+  }
+
+  /** Tokens in the rotating context window — may be revised on subsequent addAudio calls. */
+  get draftTokens(): AlignedToken[] {
+    return [...this._draftTokens];
+  }
+
+  /** AlignedResult built from finalized tokens only — safe to persist incrementally. */
+  get finalizedResult(): AlignedResult {
+    return sentencesToResult(
+      tokensToSentences(this._finalizedTokens, this.decodingConfig.sentence),
+    );
+  }
+
+  /** Full transcript (finalized + draft) — best current guess. */
   get result(): AlignedResult {
     return sentencesToResult(
       tokensToSentences(
-        [...this.finalizedTokens, ...this.draftTokens],
+        [...this._finalizedTokens, ...this._draftTokens],
         this.decodingConfig.sentence,
       ),
     );
@@ -552,8 +622,8 @@ export class StreamingParakeet {
       const draftState: DecoderState = { lastToken: this.lastToken, hiddenState: this.decoderHidden };
       const [draftTokens] = (this.model as ParakeetTDT).decode(draftInput, draftLengths, [draftState]);
 
-      this.finalizedTokens.push(...(finTokens[0] as AlignedToken[]));
-      this.draftTokens = draftTokens[0] as AlignedToken[];
+      this._finalizedTokens.push(...(finTokens[0] as AlignedToken[]));
+      this._draftTokens = draftTokens[0] as AlignedToken[];
 
     } else if (this.model instanceof ParakeetCTC) {
       const finLengths = MxArray.fromInt32(new Int32Array([finalizedLength]), s(1));
@@ -566,8 +636,34 @@ export class StreamingParakeet {
       const draftLengths = MxArray.fromInt32(new Int32Array([length - finalizedLength]), s(1));
       const draftTokens = (this.model as ParakeetCTC).decode(draftInput, draftLengths);
 
-      this.finalizedTokens.push(...(finTokens[0] as AlignedToken[]));
-      this.draftTokens = draftTokens[0] as AlignedToken[];
+      this._finalizedTokens.push(...(finTokens[0] as AlignedToken[]));
+      this._draftTokens = draftTokens[0] as AlignedToken[];
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// consumePcmStream helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Feed an async iterable of raw PCM frames (Float32Array, 16kHz mono) into a
+ * StreamingParakeet session and return the final AlignedResult.
+ *
+ * This is the common "consume and wait" pattern used by both the CLI --stream
+ * flag and the HTTP server's POST /transcribe endpoint.
+ */
+export async function consumePcmStream(
+  stream: StreamingParakeet,
+  source: AsyncIterable<Float32Array>,
+): Promise<AlignedResult> {
+  await stream.start();
+  try {
+    for await (const chunk of source) {
+      stream.addAudio(chunk);
+    }
+  } finally {
+    stream.stop();
+  }
+  return stream.result;
 }
