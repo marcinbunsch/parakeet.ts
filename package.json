@@ -2,12 +2,28 @@
   "name": "parakeet-mlx",
   "version": "1.0.0",
   "description": "Community TypeScript port of parakeet-mlx: Nvidia Parakeet ASR on Apple Silicon (not affiliated with NVIDIA)",
+  "license": "MIT",
+  "keywords": [
+    "asr",
+    "speech-recognition",
+    "parakeet",
+    "mlx",
+    "apple-silicon",
+    "whisper-alternative",
+    "transcription",
+    "nvidia"
+  ],
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
     "parakeet-mlx": "./dist/cli.js"
   },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "exports": {
     ".": {
       "import": "./dist/index.js",
@@ -19,8 +35,9 @@
     }
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && chmod +x dist/cli.js",
     "dev": "tsc --watch",
+    "prepublishOnly": "npm run build",
     "test:integration": "vitest run test/integration"
   },
   "dependencies": {
