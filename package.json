@@ -18,7 +18,7 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "parakeet": "./dist/cli.js"
+    "parakeet": "./dist/mlx/cli.js"
   },
   "files": [
     "dist",
@@ -30,13 +30,17 @@
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
     },
-    "./server": {
-      "import": "./dist/server.js",
-      "types": "./dist/server.d.ts"
+    "./mlx": {
+      "import": "./dist/mlx/index.js",
+      "types": "./dist/mlx/index.d.ts"
+    },
+    "./mlx/server": {
+      "import": "./dist/mlx/server.js",
+      "types": "./dist/mlx/server.d.ts"
     }
   },
   "scripts": {
-    "build": "tsc && chmod +x dist/cli.js",
+    "build": "tsc && chmod +x dist/mlx/cli.js",
     "dev": "tsc --watch",
     "prepublishOnly": "npm run build",
     "test:integration": "vitest run test/integration"

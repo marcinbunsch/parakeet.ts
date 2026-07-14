@@ -12,7 +12,7 @@
 import { parseArgs } from 'node:util';
 import { fromPretrained } from './utils.js';
 import { consumePcmStream } from './parakeet.js';
-import type { AlignedResult } from './alignment.js';
+import type { AlignedResult } from '../alignment.js';
 
 const DEFAULT_MODEL = 'mlx-community/parakeet-tdt-0.6b-v3';
 

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest"
 import path from "node:path"
-import { fromLocal } from "../../src/utils.js"
+import { fromLocal } from "../../src/mlx/utils.js"
 
 const MODEL_PATH = path.join(
   process.env["HOME"] ?? "/tmp",

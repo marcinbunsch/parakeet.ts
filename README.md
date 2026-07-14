@@ -21,7 +21,7 @@ npm install parakeet.ts
 ### SDK
 
 ```ts
-import { fromPretrained } from 'parakeet.ts';
+import { fromPretrained } from 'parakeet.ts/mlx';
 
 const model = await fromPretrained('mlx-community/parakeet-tdt-0.6b-v3');
 const result = await model.transcribe('recording.wav');
@@ -44,7 +44,7 @@ const model = await fromPretrained('mlx-community/parakeet-tdt-0.6b-v3', {
 });
 
 // Or load from a local directory
-import { fromLocal } from 'parakeet.ts';
+import { fromLocal } from 'parakeet.ts/mlx';
 const model = fromLocal('/path/to/model/dir');
 ```
 
@@ -53,7 +53,7 @@ const model = fromLocal('/path/to/model/dir');
 For real-time or incremental transcription, use `StreamingParakeet` directly or the `consumePcmStream` helper:
 
 ```ts
-import { consumePcmStream } from 'parakeet.ts';
+import { consumePcmStream } from 'parakeet.ts/mlx';
 
 const stream = model.transcribeStream();
 const result = await consumePcmStream(stream, pcmFrameIterable);
@@ -144,7 +144,7 @@ Exit codes: `0` success, `1` file/IO error, `2` model error.
 
 ### HTTP server
 
-The `parakeet.ts/server` entry point exports a [Hono](https://hono.dev/) route factory. Install the extra deps first:
+The `parakeet.ts/mlx/server` entry point exports a [Hono](https://hono.dev/) route factory. Install the extra deps first:
 
 ```sh
 npm install hono @hono/node-server
@@ -153,8 +153,8 @@ npm install hono @hono/node-server
 ```ts
 import { Hono } from 'hono';
 import { serve } from '@hono/node-server';
-import { fromPretrained } from 'parakeet.ts';
-import { createParakeetRoutes } from 'parakeet.ts/server';
+import { fromPretrained } from 'parakeet.ts/mlx';
+import { createParakeetRoutes } from 'parakeet.ts/mlx/server';
 
 const model = await fromPretrained('mlx-community/parakeet-tdt-0.6b-v3');
 

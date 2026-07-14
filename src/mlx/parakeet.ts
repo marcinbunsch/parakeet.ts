@@ -20,7 +20,7 @@ import {
   sentencesToResult,
   mergeLongestContiguous,
   mergeLongestCommonSubsequence,
-} from './alignment.js';
+} from '../alignment.js';
 import { ConformerCache, RotatingConformerCache } from './cache.js';
 
 function s(...dims: number[]): BigInt64Array {

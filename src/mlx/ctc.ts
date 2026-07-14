@@ -1,7 +1,7 @@
 import { MxArray } from '@mlx-node/core';
 import { Module, WeightMap, Conv1d, logSoftmax, softmax } from './nn.js';
-import { makeAlignedToken, AlignedToken } from './alignment.js';
-import { decode } from './tokenizer.js';
+import { makeAlignedToken, AlignedToken } from '../alignment.js';
+import { decode } from '../tokenizer.js';
 
 function s(...dims: number[]): BigInt64Array {
   return BigInt64Array.from(dims.map(BigInt));

@@ -1,7 +1,7 @@
 import { MxArray } from '@mlx-node/core';
 import { Module, WeightMap, Linear, Embedding, LSTM, relu, sigmoid, softmax } from './nn.js';
-import { makeAlignedToken, AlignedToken } from './alignment.js';
-import { decode } from './tokenizer.js';
+import { makeAlignedToken, AlignedToken } from '../alignment.js';
+import { decode } from '../tokenizer.js';
 
 function s(...dims: number[]): BigInt64Array {
   return BigInt64Array.from(dims.map(BigInt));
@@ -270,7 +270,7 @@ export function decodeRNNTGreedy(
   maxSymbols: number | null,
   states: DecoderState[],
   timeRatio: number,
-): [Array<Array<import('./alignment.js').AlignedToken>>, DecoderState[]] {
+): [Array<Array<import('../alignment.js').AlignedToken>>, DecoderState[]] {
   const fShape = features.shape();
   const B = Number(fShape[0]);
 
