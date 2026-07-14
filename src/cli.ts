@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 /**
- * parakeet-mlx CLI
+ * parakeet.ts CLI
  *
  * Usage:
- *   parakeet-mlx file.wav
- *   parakeet-mlx file.wav --json
- *   parakeet-mlx file.wav --model mlx-community/parakeet-tdt-0.6b-v3
- *   parakeet-mlx --stream < pcm_f32le_16k.raw
+ *   parakeet file.wav
+ *   parakeet file.wav --json
+ *   parakeet file.wav --model mlx-community/parakeet-tdt-0.6b-v3
+ *   parakeet --stream < pcm_f32le_16k.raw
  */
 
 import { parseArgs } from 'node:util';
@@ -33,11 +33,11 @@ const { values, positionals } = parseArgs({
 
 if (values.help) {
   process.stdout.write(`
-parakeet-mlx — Nvidia Parakeet ASR (Apple Silicon)
+parakeet — Nvidia Parakeet ASR (parakeet.ts)
 
 Usage:
-  parakeet-mlx <file.wav> [options]
-  parakeet-mlx --stream [options] < pcm_f32le_16k.raw
+  parakeet <file.wav> [options]
+  parakeet --stream [options] < pcm_f32le_16k.raw
 
 Options:
   --model, -m <id>   HuggingFace repo or local dir (default: ${DEFAULT_MODEL})

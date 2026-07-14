@@ -1,11 +1,11 @@
 /**
- * parakeet-mlx/server — Hono route factory for the streaming ASR endpoint.
+ * parakeet.ts/server — Hono route factory for the streaming ASR endpoint.
  *
  * Usage:
  *   import { Hono } from 'hono';
  *   import { serve } from '@hono/node-server';
- *   import { fromPretrained } from 'parakeet-mlx';
- *   import { createParakeetRoutes } from 'parakeet-mlx/server';
+ *   import { fromPretrained } from 'parakeet.ts';
+ *   import { createParakeetRoutes } from 'parakeet.ts/server';
  *
  *   const model = await fromPretrained('mlx-community/parakeet-tdt-0.6b-v3');
  *   const app = new Hono();

@@ -1,7 +1,7 @@
 {
-  "name": "parakeet-mlx",
+  "name": "parakeet.ts",
   "version": "1.0.0",
-  "description": "Community TypeScript port of parakeet-mlx: Nvidia Parakeet ASR on Apple Silicon (not affiliated with NVIDIA)",
+  "description": "TypeScript runtime for Nvidia Parakeet ASR models (community port, not affiliated with NVIDIA)",
   "license": "MIT",
   "keywords": [
     "asr",
@@ -9,6 +9,7 @@
     "parakeet",
     "mlx",
     "apple-silicon",
+    "cuda",
     "whisper-alternative",
     "transcription",
     "nvidia"
@@ -17,7 +18,7 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "parakeet-mlx": "./dist/cli.js"
+    "parakeet": "./dist/cli.js"
   },
   "files": [
     "dist",

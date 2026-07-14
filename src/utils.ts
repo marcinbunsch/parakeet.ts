@@ -162,7 +162,7 @@ async function downloadFromHub(
   // Download directly from HuggingFace CDN (Node 18+ has built-in fetch)
   const url = `https://huggingface.co/${repoId}/resolve/main/${filename}`;
   const response = await fetch(url, {
-    headers: { 'User-Agent': 'parakeet-mlx/1.0.0' },
+    headers: { 'User-Agent': 'parakeet.ts/1.0.0' },
   });
 
   if (!response.ok) {

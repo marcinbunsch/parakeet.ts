@@ -1,8 +1,8 @@
-# parakeet-mlx
+# parakeet.ts
 
-Community TypeScript port of [parakeet-mlx](https://github.com/senstens/parakeet-mlx) — Nvidia Parakeet ASR models running on Apple Silicon via MLX.
+TypeScript runtime for Nvidia Parakeet ASR models. Currently runs on Apple Silicon via MLX.
 
-> **Not affiliated with NVIDIA or the upstream Python project.**
+> **Not affiliated with NVIDIA.**
 
 ## Requirements
 
@@ -13,7 +13,7 @@ Community TypeScript port of [parakeet-mlx](https://github.com/senstens/parakeet
 ## Install
 
 ```sh
-npm install parakeet-mlx
+npm install parakeet.ts
 ```
 
 ## Usage
@@ -21,7 +21,7 @@ npm install parakeet-mlx
 ### SDK
 
 ```ts
-import { fromPretrained } from 'parakeet-mlx';
+import { fromPretrained } from 'parakeet.ts';
 
 const model = await fromPretrained('mlx-community/parakeet-tdt-0.6b-v3');
 const result = await model.transcribe('recording.wav');
@@ -44,7 +44,7 @@ const model = await fromPretrained('mlx-community/parakeet-tdt-0.6b-v3', {
 });
 
 // Or load from a local directory
-import { fromLocal } from 'parakeet-mlx';
+import { fromLocal } from 'parakeet.ts';
 const model = fromLocal('/path/to/model/dir');
 ```
 
@@ -53,7 +53,7 @@ const model = fromLocal('/path/to/model/dir');
 For real-time or incremental transcription, use `StreamingParakeet` directly or the `consumePcmStream` helper:
 
 ```ts
-import { consumePcmStream } from 'parakeet-mlx';
+import { consumePcmStream } from 'parakeet.ts';
 
 const stream = model.transcribeStream();
 const result = await consumePcmStream(stream, pcmFrameIterable);
@@ -68,7 +68,7 @@ await stream.start();
 
 for await (const chunk of pcmFrameIterable) {
   stream.addAudio(chunk);
-  console.log(stream.result.text);        // best current guess (finalized + draft)
+  console.log(stream.result.text);          // best current guess (finalized + draft)
   console.log(stream.finalizedResult.text); // committed tokens only
 }
 
@@ -119,16 +119,16 @@ type AlignedToken = {
 
 ```sh
 # Transcribe a file (auto-downloads model on first run)
-parakeet-mlx recording.wav
+parakeet recording.wav
 
 # JSON output with word-level timestamps
-parakeet-mlx recording.wav --json
+parakeet recording.wav --json
 
 # Different model
-parakeet-mlx recording.wav --model mlx-community/parakeet-tdt-0.6b-v3
+parakeet recording.wav --model mlx-community/parakeet-tdt-0.6b-v3
 
 # Stream raw f32le mono 16kHz PCM from stdin
-ffmpeg -i recording.wav -f f32le -ar 16000 -ac 1 - | parakeet-mlx --stream
+ffmpeg -i recording.wav -f f32le -ar 16000 -ac 1 - | parakeet --stream
 ```
 
 Options:
@@ -144,7 +144,7 @@ Exit codes: `0` success, `1` file/IO error, `2` model error.
 
 ### HTTP server
 
-The `parakeet-mlx/server` entry point exports a [Hono](https://hono.dev/) route factory. Install the extra deps first:
+The `parakeet.ts/server` entry point exports a [Hono](https://hono.dev/) route factory. Install the extra deps first:
 
 ```sh
 npm install hono @hono/node-server
@@ -153,8 +153,8 @@ npm install hono @hono/node-server
 ```ts
 import { Hono } from 'hono';
 import { serve } from '@hono/node-server';
-import { fromPretrained } from 'parakeet-mlx';
-import { createParakeetRoutes } from 'parakeet-mlx/server';
+import { fromPretrained } from 'parakeet.ts';
+import { createParakeetRoutes } from 'parakeet.ts/server';
 
 const model = await fromPretrained('mlx-community/parakeet-tdt-0.6b-v3');
 
