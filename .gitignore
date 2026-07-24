@@ -4,8 +4,8 @@
 # Dependencies
 node_modules/
 
-# Build output
-dist/
+# Build output is vendored (committed) so the package works from a git install.
+# Rebuild with `npm run build` before committing changes to src/.
 
 # Lockfiles (using pnpm)
 package-lock.json

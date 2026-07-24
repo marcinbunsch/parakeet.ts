@@ -1,0 +1,2 @@
+export { AlignedToken, AlignedSentence, AlignedResult, SentenceConfig, makeAlignedToken, makeAlignedSentence, makeAlignedResult, tokensToSentences, sentencesToResult, } from './alignment.js';
+//# sourceMappingURL=index.d.ts.map
