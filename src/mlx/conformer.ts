@@ -182,9 +182,28 @@ export class ConformerBlock extends Module {
   }
 
   setAttentionModel(name: AttentionModel, contextSize: [number, number] = [256, 256]): void {
+    const oldAttn = this.selfAttn;
     const newAttn = this.buildAttention(name, contextSize);
-    // Copy weights from old attention if possible
-    // (In a real implementation we'd need to transfer parameters)
+
+    // Transfer the already-loaded parameters into the new module. The rel_pos
+    // and rel_pos_local_attn variants share an identical parameter set (the
+    // local class extends the global one), so weights carry over directly.
+    if (
+      newAttn instanceof RelPositionMultiHeadAttention &&
+      oldAttn instanceof RelPositionMultiHeadAttention
+    ) {
+      newAttn.copyWeightsFrom(oldAttn);
+    } else if (
+      newAttn instanceof MultiHeadAttention &&
+      oldAttn instanceof MultiHeadAttention
+    ) {
+      newAttn.copyWeightsFrom(oldAttn);
+    } else {
+      throw new Error(
+        `Cannot switch attention model between incompatible types (weights would be lost)`,
+      );
+    }
+
     this.selfAttn = newAttn;
   }
 

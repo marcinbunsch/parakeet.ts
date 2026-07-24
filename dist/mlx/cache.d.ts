@@ -19,5 +19,6 @@ export declare class RotatingConformerCache extends ConformerCache {
     private readonly dropSize;
     constructor(keepSize: number, cacheDrop: number);
     updateAndFetchKV(k: MxArray, v: MxArray): [MxArray, MxArray];
+    updateAndFetchConv(x: MxArray, padding: number): MxArray;
 }
 //# sourceMappingURL=cache.d.ts.map
