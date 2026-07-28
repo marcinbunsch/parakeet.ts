@@ -50,9 +50,7 @@
     "build": "tsc && chmod +x dist/mlx/cli.js",
     "dev": "tsc --watch",
     "prepublishOnly": "npm run build",
-    "test": "node scripts/test.mjs",
-    "test:mac": "vitest run test/integration/transcribe.test.ts test/integration/streaming.test.ts",
-    "test:linux": "vitest run test/integration/backend-parity.test.ts",
+    "test": "vitest run test/integration",
     "test:integration": "vitest run test/integration"
   },
   "dependencies": {
