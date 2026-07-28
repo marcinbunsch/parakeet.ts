@@ -1,101 +1,107 @@
-# CUDA / Nvidia GPU support (Linux)
+# Running on CUDA (Linux) — dual-backend design
 
-Goal: run this library on a Linux machine with an Nvidia RTX GPU, not just Apple
-Silicon.
+Goal: run this library live on **both** a Mac (Apple Silicon) and a Linux box
+with an Nvidia RTX GPU, **without changing app code**. Same public API, same CLI,
+same server — the GPU work is swapped underneath by platform.
 
-## Key finding: the model code likely needs no rewrite
+## Chosen approach: abstract at the model boundary, offload CUDA to ONNX Runtime
 
-MLX itself now has a CUDA backend, and so does the exact binding this repo uses.
-`@mlx-node/core` (the mlx-node project) has an **experimental CUDA path** —
-"device-agnostic eager fallbacks with no custom CUDA kernels yet — functional,
-but not performance-tuned," inference-only. It runs MLX code on Nvidia GPUs
-through MLX's own CUDA backend.
+We do **not** give this codebase a second tensor library, and we do **not** rely
+on mlx-node's CUDA build (immature, painful to compile — see note at the end).
 
-So the same `MxArray` API we already call is meant to run on CUDA unchanged. The
-codebase is already set up for this:
+Instead we abstract at the **model boundary**. The library is not one monolithic
+graph; it's:
 
-- All MLX code is isolated in `src/mlx/`.
-- Every file imports only the `MxArray` **type** — 9 files, ~30 tensor ops.
-- The audio STFT/FFT is pure JS on the CPU anyway.
+1. Audio -> mel spectrogram — **already pure JS/CPU**
+2. **Encoder** (conformer) forward — the heavy compute
+3. A **decode loop** (TDT/RNNT greedy) that repeatedly calls:
+   - **Prediction network** (LSTM, autoregressive over emitted tokens)
+   - **Joint network** -> logits -> argmax
+4. Logits -> tokens -> text — **tokenizer/alignment, already pure JS**
 
-So "port 30 ops to a CUDA tensor library" is the wrong framing — that work is
-already done inside MLX. The real work is getting the **native binding** to run
-on **our box**.
+Only steps 2 and 3 touch tensors. Everything else — mel front-end, greedy loop,
+argmax, tokenizer, alignment, CLI, server, streaming, mutex — is plain
+TypeScript and stays identical on both platforms.
 
-## Our target: x86_64 desktop + RTX card
+So the backend interface is tiny. A backend implements **three calls** returning
+`{ data: Float32Array, shape: number[] }`:
 
-This is the decisive fact. **No prebuilt CUDA binary exists for x86_64 today.**
-mlx-node's only validated CUDA target is `linux-arm64-gnu` (GB10 / DGX Spark, an
-ARM Grace-Blackwell box). So the entry ticket is a source build.
+```ts
+interface ParakeetBackend {
+  encode(mel):            EncoderOut       // conformer
+  predict(tokens, state): { out, state }   // prediction net
+  joint(encT, predU):     Logits           // joint net
+}
+```
 
-### Step 1 — build `@mlx-node/core` from source with CUDA (the hard part)
+- `MlxBackend` — wraps the existing `src/mlx/` modules. Mac, fast (Metal).
+- `OnnxBackend` — wraps `onnxruntime-node` sessions. **CUDA execution provider
+  on Linux.**
 
-Prerequisites:
+The public API (`ParakeetTDT.transcribe`, streaming, `createParakeetRoutes`, the
+CLI) never changes. Backend is chosen at load time / auto-detected by platform.
 
-- Nvidia driver >= 580
-- CUDA 13 toolkit (`nvcc` on PATH)
-- BLAS/LAPACK headers
+## Decision: MLX on Mac + ONNX on Linux
 
-Set the build's target arch to **our card's compute capability**, not their
-`sm_121`:
+Two backends, best performance on each:
 
-| GPU            | Arch      |
-| -------------- | --------- |
-| RTX 30-series  | `sm_86`  (Ampere)  |
-| RTX 40-series  | `sm_89`  (Ada)     |
-| RTX 50-series  | `sm_120` (Blackwell) |
+- **Mac** keeps the MLX/Metal path — fastest on Apple Silicon (unified memory).
+- **Linux** uses ONNX Runtime + CUDA EP.
 
-The build skips the Metal step automatically on Linux and emits
-`mlx-core.linux-x64-gnu.node`.
+Cost: two backends to keep numerically in sync. Accepted for the performance
+win. (Alternatives considered: ONNX everywhere / drop MLX — simpler but slower
+on Mac; ONNX default + MLX optional.)
 
-This is the one genuinely uncertain step. It's an early proof-of-concept
-(dependency pinned at `^0.0.7`; the CUDA path lives in a newer/experimental
-build), so a clean x86_64 source build is plausible but not guaranteed. Budget
-time for a compile fight.
+## Why ONNX Runtime is the mature offload target
 
-### Step 2 — op-coverage shakeout
+- `onnxruntime-node` is a single well-maintained npm package with a **CUDA EP**
+  — no compiling MLX from source, no `sm_XX` arch fights, no mlx-node pain.
+- We reimplement **nothing** of conv/attention. NeMo bakes those into the ONNX
+  graph; ORT runs them with cuDNN kernels. That is the "offload" we want.
+- Pre-exported Parakeet ONNX models already exist (e.g. the `onnx-asr` project
+  and HuggingFace exports run exactly this model), so we may not need to run
+  NeMo's exporter ourselves.
+- ORT also runs on Mac (CPU/CoreML), so ONNX could be the only backend later if
+  we ever want to drop MLX.
 
-Once it builds, the model code should run **unchanged**. Run it and catch any
-"not implemented on CUDA" throws. Our op set is basic (matmul, take, reshape,
-transpose, slice, logSoftmax, pad, concatenate, LSTM gate arithmetic), so odds
-are decent. Watch these spots:
+## Work involved
 
-- Conv via im2col (`take` / `reshape` / `matmul`) in `src/mlx/nn.ts`
-- Cache slicing / concatenation in `src/mlx/cache.ts`
+1. **Define `ParakeetBackend`** (the 3-call interface above) and route the
+   existing decode loops (`src/mlx/rnnt.ts`, `ctc.ts`) through it. The loop
+   logic, argmax, and slicing move to plain typed-array TS so they're
+   backend-agnostic.
+2. **`MlxBackend`** — thin wrapper over the current `src/mlx/` modules
+   (encoder, prediction, joint forwards). Mostly re-exposing what exists.
+3. **`OnnxBackend`** — three `ort.InferenceSession`s (encoder, prediction,
+   joint), each `session.run()` fed/returning `Float32Array` + shape. Set the
+   execution provider to CUDA on Linux.
+4. **Model assets** — obtain/ship the ONNX weight files (encoder / prediction /
+   joint) alongside the existing safetensors, or fetch from HF. Confirm they
+   match the checkpoint this library already loads.
+5. **Backend selection** — pick by platform at load, with an override.
+6. **Parity check** — diff transcripts: MLX-on-Mac vs ONNX-on-Linux vs ONNX-CPU.
+7. **Packaging** — `onnxruntime-node` as an optional/peer dep so a Mac-only
+   install doesn't drag CUDA libs, and vice-versa. `ffmpeg` audio is already
+   cross-platform.
 
-### Step 3 — correctness
+## Prerequisites on the Linux box (for ONNX + CUDA)
 
-Diff transcripts against a Mac run for numerical parity.
+- Nvidia driver + CUDA/cuDNN versions matching the `onnxruntime-node` build's
+  CUDA EP requirements (check the installed ORT version's matrix).
+- The RTX card only needs a supported compute capability — no per-arch compile,
+  ORT ships prebuilt CUDA kernels.
 
-### Step 4 — performance
+## Note: why not mlx-node's CUDA backend
 
-Slow at first: eager fallbacks, no tuned kernels. Fine for "it runs on my RTX,"
-not yet for throughput.
-
-### Step 5 — repo hygiene (small)
-
-- Bump the dep off `^0.0.7` to the CUDA-capable build.
-- Drop Apple-Silicon-only assumptions (`engines`, the `mlx` naming, README).
-- Make the native dep platform-optional so a Mac install doesn't pull a CUDA
-  binary and vice-versa.
-- `ffmpeg` for audio is already cross-platform — no change.
-
-## Decision rule
-
-- **If the source build succeeds** → small project: build + shakeout + a bit of
-  packaging. No rewrite.
-- **If it fails or key ops are missing** → fallback is a separate backend:
-  export Parakeet to ONNX and run via `onnxruntime-node` with the CUDA execution
-  provider. That's a second implementation, weeks not hours, but it's the
-  robust, well-trodden way to run this model on an RTX card.
-
-Recommendation: timebox the mlx-node CUDA source build first, since success
-there costs almost nothing in code. Treat ONNX as the fallback only if that
-stalls.
+mlx-node does have an experimental CUDA path, but it is an early proof-of-concept
+(device-agnostic eager fallbacks, no tuned kernels, validated only on ARM64
+GB10/DGX Spark, no x86_64 prebuilt -> source build required). On an x86_64 + RTX
+desktop it's a painful compile with uncertain payoff. The ONNX route sidesteps
+all of that and reuses NVIDIA's own mature CUDA kernels.
 
 ## Sources
 
-- mlx-node: https://github.com/mlx-node/mlx-node
-- MLX CUDA backend (Awni Hannun): https://x.com/awnihannun/status/1948878861795819662
-- MLX build/install docs: https://ml-explore.github.io/mlx/build/html/install.html
-- MLX on CUDA discussion: https://github.com/ml-explore/mlx/discussions/2422
+- onnx-asr (Parakeet via ONNX Runtime): https://github.com/istupakov/onnx-asr
+- ONNX Runtime Node.js / execution providers: https://onnxruntime.ai/docs/get-started/with-javascript/node.html
+- NVIDIA NeMo (reference Parakeet, ONNX export): https://github.com/NVIDIA/NeMo
+- mlx-node (experimental CUDA): https://github.com/mlx-node/mlx-node
