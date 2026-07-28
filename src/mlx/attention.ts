@@ -91,6 +91,18 @@ export class MultiHeadAttention extends Module {
     this.linearV.loadWeights(weights, `${prefix}.linear_v`);
     this.linearOut.loadWeights(weights, `${prefix}.linear_out`);
   }
+
+  /** Copy the loaded parameters from another module of the same shape. */
+  copyWeightsFrom(other: MultiHeadAttention): void {
+    this.linearQ.weight = other.linearQ.weight;
+    this.linearQ.bias = other.linearQ.bias;
+    this.linearK.weight = other.linearK.weight;
+    this.linearK.bias = other.linearK.bias;
+    this.linearV.weight = other.linearV.weight;
+    this.linearV.bias = other.linearV.bias;
+    this.linearOut.weight = other.linearOut.weight;
+    this.linearOut.bias = other.linearOut.bias;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -227,6 +239,22 @@ export class RelPositionMultiHeadAttention extends Module {
       this.posBiasV = MxArray.zeros(s(this.nHead, this.headDim), null);
     }
   }
+
+  /** Copy the loaded parameters from another rel-pos module of the same shape. */
+  copyWeightsFrom(other: RelPositionMultiHeadAttention): void {
+    this.linearQ.weight = other.linearQ.weight;
+    this.linearQ.bias = other.linearQ.bias;
+    this.linearK.weight = other.linearK.weight;
+    this.linearK.bias = other.linearK.bias;
+    this.linearV.weight = other.linearV.weight;
+    this.linearV.bias = other.linearV.bias;
+    this.linearOut.weight = other.linearOut.weight;
+    this.linearOut.bias = other.linearOut.bias;
+    this.linearPos.weight = other.linearPos.weight;
+    this.linearPos.bias = other.linearPos.bias;
+    this.posBiasU = other.posBiasU;
+    this.posBiasV = other.posBiasV;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -283,39 +311,56 @@ export class RelPositionMultiHeadLocalAttention extends RelPositionMultiHeadAtte
 
     const kLen = Number(Kr.shape()[2]);
     const [leftCtx, rightCtx] = this.contextSize;
+    const kOffset = kLen - qSeq; // queries align to the right of the (cached) keys
 
-    // Content scores
+    // Content scores: [batch, heads, qSeq, kLen]
     const Qu = Qr.add(this.posBiasU.expandDims(1));
     const Qv = Qr.add(this.posBiasV.expandDims(1));
+    const matrixAC = Qu.matmul(Kr.transpose(new Int32Array([0, 1, 3, 2])));
 
-    const matrixAC = Qu.matmul(Kr.transpose(new Int32Array([0, 1, 3, 2]))).mulScalar(this.scale);
+    // Raw position scores against the relative-position buffer:
+    //   [batch, heads, qSeq, posLen], posLen = leftCtx + rightCtx + 1.
+    // pe row r encodes relative distance (leftCtx - r).
+    const matrixBDraw = Qv.matmul(Pr.transpose(new Int32Array([0, 1, 3, 2])));
 
-    // Position scores — simplified: use relative positions from posEmb
-    const matrixBD = Qv.matmul(Pr.transpose(new Int32Array([0, 1, 3, 2]))).mulScalar(this.scale);
-
-    let scores = matrixAC; // start with content scores
-
-    // Build local attention mask — positions outside [t-left, t+right] get -inf
-    // We build a [1, 1, qSeq, kLen] mask
-    const maskData = new Float32Array(qSeq * kLen).fill(-Infinity);
+    // For each (query qi, key ki), select the pe row for distance
+    //   d = (kOffset + qi) - ki   ->   r = leftCtx - d
+    // and mask keys outside the [qi-leftCtx, qi+rightCtx] window. r in
+    // [0, posLen) is exactly the in-window condition, so it drives both.
+    const block = new Int32Array(qSeq * kLen);
+    const maskData = new Float32Array(qSeq * kLen);
     for (let qi = 0; qi < qSeq; qi++) {
-      // Align q to the right side of k (k might be longer due to cache)
-      const kOffset = kLen - qSeq;
-      const ki_start = Math.max(0, kOffset + qi - leftCtx);
-      const ki_end = Math.min(kLen, kOffset + qi + rightCtx + 1);
-      for (let ki = ki_start; ki < ki_end; ki++) {
-        maskData[qi * kLen + ki] = 0.0;
+      for (let ki = 0; ki < kLen; ki++) {
+        const r = leftCtx - kOffset - qi + ki;
+        const flat = qi * kLen + ki;
+        if (r >= 0 && r < posLen) {
+          block[flat] = r;
+          maskData[flat] = 0.0;
+        } else {
+          block[flat] = 0; // clamped; masked out below
+          maskData[flat] = -Infinity;
+        }
       }
     }
+
+    // Gather the aligned position scores: [batch, heads, qSeq, kLen].
+    // takeAlongAxis requires indices to match the source rank and non-gathered
+    // dims, so replicate the per-(qi,ki) block across batch and heads.
+    const idxData = new Int32Array(batch * this.nHead * qSeq * kLen);
+    for (let i = 0; i < batch * this.nHead; i++) {
+      idxData.set(block, i * qSeq * kLen);
+    }
+    const idx = MxArray.fromInt32(idxData, s(batch, this.nHead, qSeq, kLen));
+    const matrixBD = matrixBDraw.takeAlongAxis(idx, 3);
+
+    let scores = matrixAC.add(matrixBD).mulScalar(this.scale);
+
     const localMask = MxArray.fromFloat32(maskData, s(1, 1, qSeq, kLen));
     scores = scores.add(localMask);
 
     if (mask !== null) {
       scores = scores.add(mask);
     }
-
-    // Add position bias where in range
-    scores = scores.add(matrixBD);
 
     const attn = softmax(scores, 3);
     const o = attn.matmul(Vr);

@@ -48,23 +48,30 @@ export class ConformerCache {
         return [cachedK, cachedV];
     }
     updateAndFetchConv(x, padding) {
-        // x: [batch, seq, channels]
+        // x: [batch, seq, channels]. Prepend `padding` cached frames of left
+        // context and append `padding` zeros so the depthwise conv (kernel
+        // 2*padding+1, no internal padding) returns a sequence of the same length.
+        if (padding === 0)
+            return x;
+        const xShape = x.shape();
+        const B = Number(xShape[0]);
+        const S = Number(xShape[1]);
+        const D = Number(xShape[2]);
         if (this.conv === null) {
-            // Pad with zeros on the left
-            const xShape = x.shape();
-            const batch = Number(xShape[0]);
-            const ch = Number(xShape[2]);
-            const pad = MxArray.zeros(s(batch, padding, ch), null);
-            this.conv = MxArray.concatenate(pad, x, 1);
+            this.conv = MxArray.zeros(s(B, padding, D), null);
+        }
+        const tokensToCache = Math.min(padding, S);
+        const cacheUpdate = x.slice(s(0, S - tokensToCache, 0), s(B, S, D));
+        if (tokensToCache < padding) {
+            const kept = this.conv.slice(s(0, tokensToCache, 0), s(B, padding, D));
+            this.conv = MxArray.concatenate(kept, cacheUpdate, 1);
         }
         else {
-            // Keep only the last `padding` frames plus new input
-            const convLen = Number(this.conv.shape()[1]);
-            const keep = Math.min(padding, convLen);
-            const tail = this.conv.slice(BigInt64Array.from([0n, BigInt(convLen - keep), 0n]), this.conv.shape());
-            this.conv = MxArray.concatenate(tail, x, 1);
+            this.conv = cacheUpdate;
         }
-        return this.conv;
+        let result = MxArray.concatenate(this.conv, x, 1);
+        result = result.pad(new Int32Array([0, 0, 0, padding, 0, 0]), 0.0);
+        return result;
     }
 }
 /**
@@ -79,20 +86,67 @@ export class RotatingConformerCache extends ConformerCache {
         this.dropSize = cacheDrop;
     }
     updateAndFetchKV(k, v) {
-        const [cachedK, cachedV] = super.updateAndFetchKV(k, v);
-        // Trim to keepSize if we've accumulated too many frames
-        const currentLen = Number(cachedK.shape()[2]);
-        if (currentLen > this.keepSize) {
-            const start = currentLen - this.keepSize;
-            const trimmedK = cachedK.slice(BigInt64Array.from([0n, 0n, BigInt(start), 0n]), cachedK.shape());
-            const trimmedV = cachedV.slice(BigInt64Array.from([0n, 0n, BigInt(start), 0n]), cachedV.shape());
-            // Update internal state
-            this.keys = trimmedK;
-            this.values = trimmedV;
-            this.offset = this.keepSize;
-            return [trimmedK, trimmedV];
+        // Return the cached history (up to keepSize frames) concatenated with ALL
+        // of the new keys/values. Only the frames that will be finalized — i.e.
+        // everything except the last `dropSize` frames — are committed to the
+        // history; the drop tail is recomputed on the next call. Frames re-fed via
+        // overlapping mel are therefore never double-counted (to_cache is 0 while
+        // the sequence is shorter than dropSize).
+        const kShape = k.shape();
+        const B = Number(kShape[0]);
+        const H = Number(kShape[1]);
+        const S = Number(kShape[2]);
+        const D = Number(kShape[3]);
+        const kOut = this.keys === null ? k : MxArray.concatenate(this.keys, k, 2);
+        const vOut = this.values === null ? v : MxArray.concatenate(this.values, v, 2);
+        const toCache = Math.min(Math.max(0, S - this.dropSize), this.keepSize);
+        if (toCache > 0) {
+            const startIdx = S - this.dropSize - toCache;
+            const endIdx = S - this.dropSize;
+            const kChunk = k.slice(s(0, 0, startIdx, 0), s(B, H, endIdx, D));
+            const vChunk = v.slice(s(0, 0, startIdx, 0), s(B, H, endIdx, D));
+            let newK = this.keys === null ? kChunk : MxArray.concatenate(this.keys, kChunk, 2);
+            let newV = this.values === null ? vChunk : MxArray.concatenate(this.values, vChunk, 2);
+            // Keep only the most recent keepSize frames of history.
+            const curLen = Number(newK.shape()[2]);
+            if (curLen > this.keepSize) {
+                const st = curLen - this.keepSize;
+                newK = newK.slice(s(0, 0, st, 0), s(B, H, curLen, D));
+                newV = newV.slice(s(0, 0, st, 0), s(B, H, curLen, D));
+            }
+            this.keys = newK;
+            this.values = newV;
+            this.offset += toCache;
         }
-        return [cachedK, cachedV];
+        return [kOut, vOut];
+    }
+    updateAndFetchConv(x, padding) {
+        // As ConformerCache.updateAndFetchConv, but only the frames that will be
+        // finalized (beyond cache_drop_size) are kept as left context for the next
+        // call — the drop_size tail is recomputed each step, not carried over.
+        if (padding === 0)
+            return x;
+        const xShape = x.shape();
+        const B = Number(xShape[0]);
+        const S = Number(xShape[1]);
+        const D = Number(xShape[2]);
+        if (this.conv === null) {
+            this.conv = MxArray.zeros(s(B, padding, D), null);
+        }
+        if (S > this.dropSize) {
+            const tokensToCache = Math.min(padding, S - this.dropSize);
+            const cacheUpdate = x.slice(s(0, S - tokensToCache, 0), s(B, S, D));
+            if (tokensToCache < padding) {
+                const kept = this.conv.slice(s(0, tokensToCache, 0), s(B, padding, D));
+                this.conv = MxArray.concatenate(kept, cacheUpdate, 1);
+            }
+            else {
+                this.conv = cacheUpdate;
+            }
+        }
+        let result = MxArray.concatenate(this.conv, x, 1);
+        result = result.pad(new Int32Array([0, 0, 0, padding, 0, 0]), 0.0);
+        return result;
     }
 }
 //# sourceMappingURL=cache.js.map

@@ -570,6 +570,10 @@ export class StreamingParakeet {
     const hopLen = this.model.preprocessorConfig.hopLength;
     const usableLen = Math.floor(this.audioBuffer.length / hopLen) * hopLen;
 
+    // Not enough audio for a single STFT frame yet — keep buffering. Feeding an
+    // empty signal to getLogMel would abort natively (uncatchable in JS).
+    if (usableLen === 0) return;
+
     const usableAudio = MxArray.fromFloat32(this.audioBuffer.slice(0, usableLen), s(usableLen));
     const mel = getLogMel(usableAudio, this.model.preprocessorConfig);
 
@@ -585,6 +589,12 @@ export class StreamingParakeet {
     const subFactor = this.model.encoderConfig.subsamplingFactor;
     const melFrames = Number(this.melBuffer.shape()[1]);
     const usableMelFrames = Math.floor(melFrames / subFactor) * subFactor;
+
+    // Fewer than one subsampled frame available — keep the mel frames buffered
+    // for the next call. Running the encoder on a zero-length sequence aborts
+    // natively (e.g. "[squeeze] Cannot squeeze axis 1 with size 0", "[max]
+    // Cannot max reduce zero size array") and cannot be caught in JS.
+    if (usableMelFrames === 0) return;
 
     const melInput = this.melBuffer.slice(
       s(0, 0, 0),
