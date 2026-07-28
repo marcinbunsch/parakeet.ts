@@ -51,7 +51,8 @@
     "dev": "tsc --watch",
     "prepublishOnly": "npm run build",
     "test": "vitest run test/integration",
-    "test:integration": "vitest run test/integration"
+    "test:mac": "PARAKEET_BACKEND=mlx vitest run test/integration",
+    "test:linux": "PARAKEET_BACKEND=onnx vitest run test/integration"
   },
   "dependencies": {
     "@mlx-node/core": "^0.0.7"

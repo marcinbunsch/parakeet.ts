@@ -1,15 +1,16 @@
 /**
- * Shared support for the backend-parameterized integration suites.
+ * Shared support for the integration suites.
  *
- * The transcribe and streaming tests are backend-agnostic: they only need a
- * `ParakeetModel`. We describe each available backend once here and run the same
- * suites over every backend that can actually load on this machine — MLX on
- * Apple Silicon, ONNX Runtime on Linux/CUDA, or both. A backend that can't load
- * (missing native lib or model assets) reports `canRun: false` and its suite is
- * skipped, so one `vitest run` adapts to whatever the box has.
+ * There is ONE set of tests. Which backend they run against is chosen by the
+ * PARAKEET_BACKEND env var (defaulting to the platform's native backend):
  *
- * Backends are imported dynamically so importing this module never hard-fails on
- * a platform that lacks one of the native libraries.
+ *   PARAKEET_BACKEND=mlx   vitest run   # Apple Silicon   (pnpm test:mac)
+ *   PARAKEET_BACKEND=onnx  vitest run   # Linux / Nvidia  (pnpm test:linux)
+ *
+ * The chosen backend is resolved once here. If its native lib or model assets
+ * aren't present, `backend.canRun` is false and the suites skip with a reason.
+ * The backend module is imported dynamically so this never hard-fails on a
+ * platform lacking the other backend's native library.
  */
 import fs from "node:fs"
 import path from "node:path"
@@ -17,8 +18,14 @@ import os from "node:os"
 import { loadAudioRaw } from "../../src/index.js"
 import type { ParakeetModel } from "../../src/index.js"
 
+export type BackendName = "mlx" | "onnx"
+
+export const BACKEND: BackendName =
+  (process.env["PARAKEET_BACKEND"] as BackendName | undefined) ??
+  (process.platform === "darwin" ? "mlx" : "onnx")
+
 export interface TestBackend {
-  name: string
+  name: BackendName
   canRun: boolean
   reason?: string
   make: () => Promise<ParakeetModel>
@@ -26,9 +33,9 @@ export interface TestBackend {
 
 export const INPUTS = path.join(import.meta.dirname, "inputs")
 
-// Expected transcripts use the `interpolated` front-end (NVIDIA's reference
-// preprocessor), the shared default. Both backends are expected to produce these
-// — that equivalence is exactly what backend-parity.test.ts pins.
+// One expected transcript set, asserted for whichever backend runs. Both
+// backends producing these (MLX on a Mac, ONNX on Linux) IS the cross-backend
+// parity guarantee. Uses the `interpolated` front-end (NVIDIA reference).
 export const SAMPLES = [
   { file: "sample-1.wav", text: "alright lets give this a go then" },
   { file: "sample-2.wav", text: "I absolutely hate small talk" },
@@ -74,8 +81,8 @@ export function concatWithGaps(parts: Float32Array[], gapSamples: number): Float
 
 export interface StreamRun {
   final: string
-  finalizedSnapshots: string[]  // finalizedResult.text after each chunk
-  tokensBeforeEnd: number       // finalized+draft tokens seen before the last chunk
+  finalizedSnapshots: string[]
+  tokensBeforeEnd: number
 }
 
 /** Feed `pcm` to a fresh stream in fixed chunks, recording behaviour. */
@@ -115,6 +122,11 @@ function findMlxDir(): string | null {
   return null
 }
 
+function findOnnxDir(): string | null {
+  const env = process.env["PARAKEET_ONNX_DIR"] ?? process.env["PARAKEET_ONNX_MODEL"]
+  return env ?? null
+}
+
 function hasOnnxExports(dir: string | null): dir is string {
   if (!dir) return false
   const enc = ["encoder-model.onnx", "encoder.onnx"].some((n) => fs.existsSync(path.join(dir, n)))
@@ -122,35 +134,33 @@ function hasOnnxExports(dir: string | null): dir is string {
   return enc && dec
 }
 
-async function mlxBackend(): Promise<TestBackend> {
-  const dir = findMlxDir()
-  let load: ((d: string, o: { filterbank: "interpolated" }) => ParakeetModel) | null = null
-  try {
-    load = (await import("../../src/mlx/index.js")).fromLocal
-  } catch { /* @mlx-node/core not loadable on this platform */ }
-  const canRun = !!dir && !!load
-  return {
-    name: "mlx",
-    canRun,
-    reason: !dir ? "MLX checkpoint not cached" : !load ? "@mlx-node/core not loadable" : undefined,
-    make: async () => load!(dir as string, { filterbank: "interpolated" }),
+async function resolveBackend(): Promise<TestBackend> {
+  if (BACKEND === "mlx") {
+    const dir = findMlxDir()
+    let load: ((d: string, o: { filterbank: "interpolated" }) => ParakeetModel) | null = null
+    try {
+      load = (await import("../../src/mlx/index.js")).fromLocal
+    } catch { /* @mlx-node/core not loadable here */ }
+    return {
+      name: "mlx",
+      canRun: !!dir && !!load,
+      reason: !dir ? "MLX checkpoint not cached" : !load ? "@mlx-node/core not loadable" : undefined,
+      make: async () => load!(dir as string, { filterbank: "interpolated" }),
+    }
   }
-}
 
-async function onnxBackend(): Promise<TestBackend> {
-  const dir = process.env["PARAKEET_ONNX_DIR"] ?? null
+  const dir = findOnnxDir()
   let load: ((d: string, o: { filterbank: "interpolated" }) => Promise<ParakeetModel>) | null = null
   let runtimeOk = true
   try {
     load = (await import("../../src/onnx/index.js")).fromLocal
-    await import("onnxruntime-node")  // ensure the native lib is present
+    await import("onnxruntime-node")
   } catch {
     runtimeOk = false
   }
-  const canRun = hasOnnxExports(dir) && !!load && runtimeOk
   return {
     name: "onnx",
-    canRun,
+    canRun: hasOnnxExports(dir) && !!load && runtimeOk,
     reason: !dir
       ? "PARAKEET_ONNX_DIR unset"
       : !hasOnnxExports(dir) ? "ONNX exports missing"
@@ -159,5 +169,5 @@ async function onnxBackend(): Promise<TestBackend> {
   }
 }
 
-/** Every backend this machine could possibly run, with availability resolved. */
-export const BACKENDS: TestBackend[] = [await mlxBackend(), await onnxBackend()]
+/** The single backend this run tests against, availability resolved. */
+export const backend: TestBackend = await resolveBackend()
