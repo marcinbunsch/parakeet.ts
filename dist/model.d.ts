@@ -101,4 +101,12 @@ export declare class StreamingParakeet {
     /** Commit the remaining draft. Call once the audio stream ends. */
     finish(): AlignedResult;
 }
+/**
+ * Feed an async iterable of raw PCM frames (Float32Array, mono at the model's
+ * sample rate) into a streaming session and return the final AlignedResult.
+ *
+ * The common "consume and wait" pattern behind the CLI `--stream` flag and the
+ * HTTP server's transcribe endpoint.
+ */
+export declare function consumePcmStream(stream: StreamingParakeet, source: AsyncIterable<Float32Array>): Promise<AlignedResult>;
 //# sourceMappingURL=model.d.ts.map

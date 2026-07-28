@@ -1,20 +1,36 @@
 import { describe, it, expect } from "vitest"
+import fs from "node:fs"
 import path from "node:path"
-import { fromLocal } from "../../src/mlx/utils.js"
+import os from "node:os"
+import { fromLocal } from "../../src/mlx/index.js"
 
-const MODEL_PATH = path.join(
-  process.env["HOME"] ?? "/tmp",
-  ".cache/huggingface/hub/models--mlx-community--parakeet-tdt-0.6b-v3/snapshots/ed2b7e8c15f9aaa0b5772e2efb986255eaef7e15",
-)
+/** Resolve the cached MLX checkpoint dir without pinning a snapshot hash. */
+function findModelDir(): string | null {
+  const base = path.join(
+    os.homedir(),
+    ".cache/huggingface/hub/models--mlx-community--parakeet-tdt-0.6b-v3/snapshots",
+  )
+  if (!fs.existsSync(base)) return null
+  for (const snap of fs.readdirSync(base)) {
+    const dir = path.join(base, snap)
+    if (fs.existsSync(path.join(dir, "config.json"))) return dir
+  }
+  return null
+}
 
+const MODEL_DIR = findModelDir()
 const INPUTS = path.join(import.meta.dirname, "inputs")
 
+// Expected transcripts use the `interpolated` filterbank (NVIDIA's reference
+// preprocessor), which is the default for the shared ParakeetModel path. The
+// old `floor` filterbank produced "a go in" / "um" — float noise in 13 dead mel
+// bins tipping knife-edge tokens; see docs/cuda.md.
 const SAMPLES = [
-  { file: "sample-1.wav", expected: "alright lets give this a go in" },
+  { file: "sample-1.wav", expected: "alright lets give this a go then" },
   { file: "sample-2.wav", expected: "I absolutely hate small talk" },
   {
     file: "sample-3.wav",
-    expected: "The best thing you can do is um give them a card",
+    expected: "The best thing you can do is uh give them a card",
   },
 ]
 
@@ -26,8 +42,10 @@ function normalize(s: string): string {
     .trim()
 }
 
-describe("transcription", () => {
-  const model = fromLocal(MODEL_PATH)
+const d = MODEL_DIR ? describe : describe.skip
+
+d("transcription", () => {
+  const model = fromLocal(MODEL_DIR as string)
 
   for (const { file, expected } of SAMPLES) {
     it(`transcribes ${file}`, async () => {

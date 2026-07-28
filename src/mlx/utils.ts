@@ -1,30 +1,17 @@
 /**
- * Model loading utilities.
+ * Low-level model-loading helpers for the MLX backend.
  *
- * Supports:
- *  - Local directories (e.g. "./models/parakeet-tdt-0.6b-v3")
- *  - HuggingFace Hub repos (e.g. "mlx-community/parakeet-tdt-0.6b-v3")
+ *  - `loadSafetensors` parses a SafeTensors weight file into a WeightMap.
+ *  - `downloadFromHub` fetches a single file from the HuggingFace CDN with an
+ *    optional progress callback, caching it under the HF hub layout.
  *
- * Weight files are SafeTensors format (model.safetensors).
- * Configuration is read from config.json which follows the NeMo format used
- * by the original parakeet-mlx Python project.
+ * The public loaders (`fromLocal` / `fromPretrained`) live in `./load.ts`, which
+ * builds a backend-agnostic `ParakeetModel` from these pieces.
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
 import type { WeightMap } from './nn.js';
-import {
-  BaseParakeet,
-  ParakeetTDT,
-  ParakeetTDTArgs,
-  ParakeetTDTCTC,
-  ParakeetTDTCTCArgs,
-  ParakeetRNNT,
-  ParakeetRNNTArgs,
-  ParakeetCTC,
-  ParakeetCTCArgs,
-} from './parakeet.js';
-import { makePreprocessArgs } from './audio.js';
 
 // ---------------------------------------------------------------------------
 // SafeTensors loading (simple header + data parser)
@@ -43,7 +30,7 @@ interface SafeTensorHeader {
  * The safetensors format: 8 bytes (header length LE uint64) + JSON header + data.
  * Uses fd-based random access to support files larger than the 2 GiB Buffer limit.
  */
-function loadSafetensors(filePath: string): WeightMap {
+export function loadSafetensors(filePath: string): WeightMap {
   const fd = fs.openSync(filePath, 'r');
 
   try {
@@ -138,7 +125,7 @@ function f16ToF32(buf: Buffer): Float32Array {
 // HuggingFace Hub download
 // ---------------------------------------------------------------------------
 
-async function downloadFromHub(
+export async function downloadFromHub(
   repoId: string,
   filename: string,
   cacheDir?: string,
@@ -200,261 +187,4 @@ async function downloadFromHub(
   }
 
   return localPath;
-}
-
-// ---------------------------------------------------------------------------
-// Config parsing (NeMo → parakeet-mlx format)
-// ---------------------------------------------------------------------------
-
-function parseConfig(config: Record<string, unknown>): BaseParakeet {
-  const target = config['target'] as string;
-  const modelDefaults = (config['model_defaults'] as Record<string, unknown>) ?? {};
-  const preprocessorRaw = config['preprocessor'] as Record<string, unknown>;
-  const encoderRaw = config['encoder'] as Record<string, unknown>;
-  const decoderRaw = config['decoder'] as Record<string, unknown>;
-  const jointRaw = config['joint'] as Record<string, unknown>;
-  const decodingRaw = config['decoding'] as Record<string, unknown>;
-
-  // Build preprocessor args
-  const preprocessor = makePreprocessArgs({
-    sampleRate: preprocessorRaw['sample_rate'] as number,
-    normalize: preprocessorRaw['normalize'] as string,
-    windowSize: preprocessorRaw['window_size'] as number,
-    windowStride: preprocessorRaw['window_stride'] as number,
-    window: preprocessorRaw['window'] as string,
-    features: preprocessorRaw['features'] as number,
-    nFft: preprocessorRaw['n_fft'] as number,
-    dither: preprocessorRaw['dither'] as number,
-    padTo: (preprocessorRaw['pad_to'] as number) ?? 0,
-    padValue: (preprocessorRaw['pad_value'] as number) ?? 0,
-    preemph: preprocessorRaw['preemph'] as number | null,
-    magPower: (preprocessorRaw['mag_power'] as number) ?? 2.0,
-  });
-
-  // Build encoder args
-  const attContextSize = (encoderRaw['att_context_size'] as [number, number] | null) ?? null;
-  const encoder = {
-    featIn: encoderRaw['feat_in'] as number,
-    nLayers: encoderRaw['n_layers'] as number,
-    dModel: encoderRaw['d_model'] as number,
-    nHeads: encoderRaw['n_heads'] as number,
-    ffExpansionFactor: encoderRaw['ff_expansion_factor'] as number,
-    subsamplingFactor: encoderRaw['subsampling_factor'] as number,
-    selfAttentionModel: encoderRaw['self_attention_model'] as string,
-    subsampling: encoderRaw['subsampling'] as string,
-    convKernelSize: encoderRaw['conv_kernel_size'] as number,
-    subsamplingConvChannels: encoderRaw['subsampling_conv_channels'] as number,
-    posEmbMaxLen: encoderRaw['pos_emb_max_len'] as number,
-    causalDownsampling: (encoderRaw['causal_downsampling'] as boolean) ?? false,
-    useBias: (encoderRaw['use_bias'] as boolean) ?? true,
-    xscaling: (encoderRaw['xscaling'] as boolean) ?? false,
-    subsamplingConvChunkingFactor: (encoderRaw['subsampling_conv_chunking_factor'] as number) ?? 1,
-    attContextSize,
-  };
-
-  const tdtDurations = modelDefaults['tdt_durations'] as number[] | undefined;
-
-  if (
-    target === 'nemo.collections.asr.models.rnnt_bpe_models.EncDecRNNTBPEModel' &&
-    tdtDurations != null
-  ) {
-    // TDT model
-    const prednetRaw = (decoderRaw['prednet'] as Record<string, unknown>) ?? {};
-    const jointnetRaw = (jointRaw['jointnet'] as Record<string, unknown>) ?? {};
-
-    const args: ParakeetTDTArgs = {
-      preprocessor,
-      encoder,
-      decoder: {
-        blankAsPad: decoderRaw['blank_as_pad'] as boolean,
-        vocabSize: decoderRaw['vocab_size'] as number,
-        prednet: {
-          predHidden: prednetRaw['pred_hidden'] as number,
-          predRnnLayers: prednetRaw['pred_rnn_layers'] as number,
-          rnnHiddenSize: prednetRaw['rnn_hidden_size'] as number | undefined,
-        },
-      },
-      joint: {
-        numClasses: jointRaw['num_classes'] as number,
-        vocabulary: jointRaw['vocabulary'] as string[],
-        jointnet: {
-          jointHidden: jointnetRaw['joint_hidden'] as number,
-          activation: jointnetRaw['activation'] as string,
-          encoderHidden: jointnetRaw['encoder_hidden'] as number,
-          predHidden: jointnetRaw['pred_hidden'] as number,
-        },
-        numExtraOutputs: (jointRaw['num_extra_outputs'] as number) ?? 0,
-      },
-      decoding: {
-        modelType: (decodingRaw['model_type'] as string) ?? 'tdt',
-        durations: tdtDurations,
-        greedy: (decodingRaw['greedy'] as Record<string, unknown>) ?? null,
-      },
-    };
-    return new ParakeetTDT(args);
-  }
-
-  if (
-    target === 'nemo.collections.asr.models.hybrid_rnnt_ctc_bpe_models.EncDecHybridRNNTCTCBPEModel' &&
-    tdtDurations != null
-  ) {
-    // TDT-CTC model
-    const prednetRaw = (decoderRaw['prednet'] as Record<string, unknown>) ?? {};
-    const jointnetRaw = (jointRaw['jointnet'] as Record<string, unknown>) ?? {};
-    const auxCtcRaw = (config['aux_ctc'] as Record<string, unknown>) ?? {};
-    const auxDecoderRaw = (auxCtcRaw['decoder'] as Record<string, unknown>) ?? {};
-
-    const args: ParakeetTDTCTCArgs = {
-      preprocessor,
-      encoder,
-      decoder: {
-        blankAsPad: decoderRaw['blank_as_pad'] as boolean,
-        vocabSize: decoderRaw['vocab_size'] as number,
-        prednet: {
-          predHidden: prednetRaw['pred_hidden'] as number,
-          predRnnLayers: prednetRaw['pred_rnn_layers'] as number,
-          rnnHiddenSize: prednetRaw['rnn_hidden_size'] as number | undefined,
-        },
-      },
-      joint: {
-        numClasses: jointRaw['num_classes'] as number,
-        vocabulary: jointRaw['vocabulary'] as string[],
-        jointnet: {
-          jointHidden: jointnetRaw['joint_hidden'] as number,
-          activation: jointnetRaw['activation'] as string,
-          encoderHidden: jointnetRaw['encoder_hidden'] as number,
-          predHidden: jointnetRaw['pred_hidden'] as number,
-        },
-        numExtraOutputs: (jointRaw['num_extra_outputs'] as number) ?? 0,
-      },
-      decoding: {
-        modelType: (decodingRaw['model_type'] as string) ?? 'tdt',
-        durations: tdtDurations,
-        greedy: (decodingRaw['greedy'] as Record<string, unknown>) ?? null,
-      },
-      auxCtc: {
-        decoder: {
-          featIn: auxDecoderRaw['feat_in'] as number,
-          numClasses: auxDecoderRaw['num_classes'] as number,
-          vocabulary: auxDecoderRaw['vocabulary'] as string[],
-        },
-      },
-    };
-    return new ParakeetTDTCTC(args);
-  }
-
-  if (
-    target === 'nemo.collections.asr.models.rnnt_bpe_models.EncDecRNNTBPEModel' &&
-    tdtDurations == null
-  ) {
-    // RNNT model
-    const prednetRaw = (decoderRaw['prednet'] as Record<string, unknown>) ?? {};
-    const jointnetRaw = (jointRaw['jointnet'] as Record<string, unknown>) ?? {};
-
-    const args: ParakeetRNNTArgs = {
-      preprocessor,
-      encoder,
-      decoder: {
-        blankAsPad: decoderRaw['blank_as_pad'] as boolean,
-        vocabSize: decoderRaw['vocab_size'] as number,
-        prednet: {
-          predHidden: prednetRaw['pred_hidden'] as number,
-          predRnnLayers: prednetRaw['pred_rnn_layers'] as number,
-          rnnHiddenSize: prednetRaw['rnn_hidden_size'] as number | undefined,
-        },
-      },
-      joint: {
-        numClasses: jointRaw['num_classes'] as number,
-        vocabulary: jointRaw['vocabulary'] as string[],
-        jointnet: {
-          jointHidden: jointnetRaw['joint_hidden'] as number,
-          activation: jointnetRaw['activation'] as string,
-          encoderHidden: jointnetRaw['encoder_hidden'] as number,
-          predHidden: jointnetRaw['pred_hidden'] as number,
-        },
-        numExtraOutputs: (jointRaw['num_extra_outputs'] as number) ?? 0,
-      },
-      decoding: {
-        greedy: (decodingRaw['greedy'] as Record<string, unknown>) ?? null,
-      },
-    };
-    return new ParakeetRNNT(args);
-  }
-
-  if (target === 'nemo.collections.asr.models.ctc_bpe_models.EncDecCTCModelBPE') {
-    // CTC model
-    const args: ParakeetCTCArgs = {
-      preprocessor,
-      encoder,
-      decoder: {
-        featIn: decoderRaw['feat_in'] as number,
-        numClasses: decoderRaw['num_classes'] as number,
-        vocabulary: decoderRaw['vocabulary'] as string[],
-      },
-      decoding: {
-        greedy: (decodingRaw['greedy'] as Record<string, unknown>) ?? null,
-      },
-    };
-    return new ParakeetCTC(args);
-  }
-
-  throw new Error(`Unsupported model target: ${target}`);
-}
-
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
-/**
- * Load a Parakeet model from a local directory.
- */
-export function fromLocal(modelDir: string): BaseParakeet {
-  const configPath = path.join(modelDir, 'config.json');
-  const weightsPath = path.join(modelDir, 'model.safetensors');
-
-  if (!fs.existsSync(configPath)) throw new Error(`config.json not found in ${modelDir}`);
-  if (!fs.existsSync(weightsPath)) throw new Error(`model.safetensors not found in ${modelDir}`);
-
-  const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-  const model = parseConfig(config);
-
-  const weights = loadSafetensors(weightsPath);
-  model.loadWeights(weights);
-
-  return model;
-}
-
-/**
- * Load a Parakeet model from a HuggingFace Hub repo or local directory.
- *
- * @param hfIdOrPath - HuggingFace repo ID (e.g. "mlx-community/parakeet-tdt-0.6b-v3")
- *                     or local directory path.
- * @param options.cacheDir - Override default HF cache directory.
- * @param options.onProgress - Called with (downloaded, total) bytes during file downloads.
- */
-export async function fromPretrained(
-  hfIdOrPath: string,
-  options: { cacheDir?: string; onProgress?: (file: string, downloaded: number, total: number) => void } = {},
-): Promise<BaseParakeet> {
-  // Check if it's a local path
-  if (fs.existsSync(hfIdOrPath) && fs.statSync(hfIdOrPath).isDirectory()) {
-    return fromLocal(hfIdOrPath);
-  }
-
-  const makeProgress = (file: string) =>
-    options.onProgress
-      ? (downloaded: number, total: number) => options.onProgress!(file, downloaded, total)
-      : undefined;
-
-  // Download from HuggingFace Hub
-  const configPath = await downloadFromHub(hfIdOrPath, 'config.json', options.cacheDir, makeProgress('config.json'));
-  const weightsPath = await downloadFromHub(hfIdOrPath, 'model.safetensors', options.cacheDir, makeProgress('model.safetensors'));
-
-  const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-  const model = parseConfig(config);
-
-  const weights = loadSafetensors(weightsPath);
-  model.loadWeights(weights);
-
-  return model;
 }

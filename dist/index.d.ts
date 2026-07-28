@@ -1,4 +1,4 @@
-export { ParakeetModel, StreamingParakeet } from './model.js';
+export { ParakeetModel, StreamingParakeet, consumePcmStream } from './model.js';
 export type { ParakeetModelArgs, TranscribeOptions, StreamOptions } from './model.js';
 export type { ParakeetBackend, EncoderOutput, EncoderLayout, DecodeStepResult, DecoderStateHandle, } from './backend.js';
 export { decodeTDTGreedy, decodeRNNTGreedy } from './decode.js';

@@ -251,3 +251,20 @@ export class StreamingParakeet {
     return this.finalizedResult;
   }
 }
+
+/**
+ * Feed an async iterable of raw PCM frames (Float32Array, mono at the model's
+ * sample rate) into a streaming session and return the final AlignedResult.
+ *
+ * The common "consume and wait" pattern behind the CLI `--stream` flag and the
+ * HTTP server's transcribe endpoint.
+ */
+export async function consumePcmStream(
+  stream: StreamingParakeet,
+  source: AsyncIterable<Float32Array>,
+): Promise<AlignedResult> {
+  for await (const chunk of source) {
+    await stream.addAudio(chunk);
+  }
+  return stream.finish();
+}

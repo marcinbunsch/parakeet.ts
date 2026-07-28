@@ -17,13 +17,13 @@
 
 import { Hono } from 'hono';
 import type { Context } from 'hono';
-import { consumePcmStream } from './parakeet.js';
-import type { BaseParakeet } from './parakeet.js';
+import { consumePcmStream } from '../model.js';
+import type { ParakeetModel } from '../model.js';
 
 const REQUIRED_CONTENT_TYPE = 'audio/pcm; rate=16000; channels=1; format=f32le';
 
 export interface ParakeetRouteOptions {
-  model: BaseParakeet;
+  model: ParakeetModel;
   /** Maximum duration of audio accepted per request (default: 300 s). */
   maxDurationSeconds?: number;
   /** Close request if no bytes arrive within this window (default: 30 000 ms). */

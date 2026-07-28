@@ -8,7 +8,7 @@
 //
 // Both return the same `ParakeetModel`.
 
-export { ParakeetModel, StreamingParakeet } from './model.js';
+export { ParakeetModel, StreamingParakeet, consumePcmStream } from './model.js';
 export type { ParakeetModelArgs, TranscribeOptions, StreamOptions } from './model.js';
 
 export type {

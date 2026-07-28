@@ -7,7 +7,7 @@
 //   import { fromLocal } from 'parakeet.ts/mlx';    // MLX (Apple Silicon)
 //
 // Both return the same `ParakeetModel`.
-export { ParakeetModel, StreamingParakeet } from './model.js';
+export { ParakeetModel, StreamingParakeet, consumePcmStream } from './model.js';
 export { decodeTDTGreedy, decodeRNNTGreedy } from './decode.js';
 export { getLogMel, loadAudioRaw, getWindow, makePreprocessArgs, computeMelFilterbanks, computeMelFilterbanksInterpolated, } from './audio.js';
 export { makeAlignedToken, makeAlignedSentence, makeAlignedResult, tokensToSentences, sentencesToResult, } from './alignment.js';

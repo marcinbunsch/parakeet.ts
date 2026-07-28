@@ -10,6 +10,7 @@ export type { OnnxBackendOptions, ExecutionProvider } from './backend.js';
 export {
   ParakeetModel,
   StreamingParakeet,
+  consumePcmStream,
   decodeTDTGreedy,
   decodeRNNTGreedy,
   getLogMel,

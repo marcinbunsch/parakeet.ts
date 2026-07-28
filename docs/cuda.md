@@ -340,13 +340,15 @@ transcription all work on the ONNX/CUDA path.
 the CUDA libraries. Note pnpm blocks its postinstall by default; the repo now
 sets `pnpm.onlyBuiltDependencies` so the CUDA EP is actually fetched.
 
-### Backwards compatibility, and the filterbank default
+### Single API, and the filterbank default
 
-The original `ParakeetTDT` / `ParakeetRNNT` / `ParakeetCTC` classes and the CLI
-are **untouched** and still use the MLX front-end, so existing behaviour and the
-current test fixtures are preserved ("a go in", "um").
+The legacy `ParakeetTDT` / `ParakeetRNNT` / `ParakeetCTC` wrapper classes and the
+old cache-aware `StreamingParakeet` have been **removed**. Both backends now load
+into the one shared `ParakeetModel`, and the CLI and HTTP server drive it. CTC /
+hybrid TDT-CTC checkpoints are no longer supported (the shared decode path and
+the ONNX export are TDT / RNN-T only).
 
-The new shared path defaults to `filterbank: 'interpolated'`, because it is both
+The shared path defaults to `filterbank: 'interpolated'`, because it is both
 correct and self-consistent:
 
 | Front-end | Backends agree? | sample-1 |
@@ -356,20 +358,23 @@ correct and self-consistent:
 | `interpolated` (NeMo reference) | yes | "a go then" |
 
 The middle row is what makes the case: with the collapsed filterbank the model
-emits the non-word "golven", and the only reason the legacy MLX path avoids it
-is float rounding noise landing favourably. Pass `{ filterbank: 'floor' }` to
-either loader to reproduce the legacy features exactly.
+emits the non-word "golven", and the only reason the old MLX path avoided it was
+float rounding noise landing favourably. Pass `{ filterbank: 'floor' }` to either
+loader to reproduce the legacy features exactly.
+
+The two integration fixtures now assert the interpolated transcripts
+("a go then", "uh give them a card"); the old buggy "a go in" / "um" strings are
+gone with the legacy classes.
 
 ### Remaining work
 
-- Fix the two MLX streaming bugs (`setAttentionModel` weight transfer, and the
-  conv-cache shape mismatch) or retire `StreamingParakeet` in `src/mlx/` in
-  favour of the shared sliding-window implementation.
 - Make the streaming mel incremental — it currently recomputes the whole window
   each update and is ~60% of per-update latency.
-- Decide whether to migrate the legacy classes and the CLI onto `ParakeetModel`,
-  which would mean updating the test fixtures to the interpolated filterbank.
+- Finish the streaming commit-boundary accounting (a token can be mangled at a
+  window boundary; `streaming.test.ts` fences this with a WER bound today).
 - Fetch ONNX weights from HuggingFace rather than requiring a local directory.
+- Re-add CTC / hybrid TDT-CTC to the shared path if a checkpoint needs it (would
+  need a CTC `decodeStep` shape on the backend interface).
 
 ## Reproducing
 
