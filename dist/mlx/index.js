@@ -1,12 +1,9 @@
 // parakeet.ts/mlx — MLX backend (Apple Silicon)
-// Model loading
-export { fromPretrained, fromLocal } from './utils.js';
-// Model classes
-export { BaseParakeet, ParakeetTDT, ParakeetRNNT, ParakeetCTC, ParakeetTDTCTC, StreamingParakeet, greedy, beam, defaultDecodingConfig, consumePcmStream, } from './parakeet.js';
-// Shared types (re-exported for convenience)
-export { makeAlignedToken, makeAlignedSentence, makeAlignedResult, tokensToSentences, sentencesToResult, } from '../alignment.js';
-// Tokenizer
-export { decode } from '../tokenizer.js';
-// Audio utilities (for advanced use)
-export { loadAudio, loadAudioRaw, getLogMel, makePreprocessArgs } from './audio.js';
+//
+// Loads a safetensors checkpoint and returns the shared, backend-agnostic
+// `ParakeetModel` — the same class the ONNX backend returns.
+export { fromLocal, fromPretrained } from './load.js';
+export { MlxBackend } from './backend.js';
+// Shared API, re-exported for convenience
+export { ParakeetModel, StreamingParakeet, consumePcmStream, decodeTDTGreedy, decodeRNNTGreedy, getLogMel, loadAudioRaw, makePreprocessArgs, computeMelFilterbanks, computeMelFilterbanksInterpolated, tokensToSentences, sentencesToResult, decode, } from '../index.js';
 //# sourceMappingURL=index.js.map

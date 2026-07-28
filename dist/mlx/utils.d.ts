@@ -1,29 +1,19 @@
 /**
- * Model loading utilities.
+ * Low-level model-loading helpers for the MLX backend.
  *
- * Supports:
- *  - Local directories (e.g. "./models/parakeet-tdt-0.6b-v3")
- *  - HuggingFace Hub repos (e.g. "mlx-community/parakeet-tdt-0.6b-v3")
+ *  - `loadSafetensors` parses a SafeTensors weight file into a WeightMap.
+ *  - `downloadFromHub` fetches a single file from the HuggingFace CDN with an
+ *    optional progress callback, caching it under the HF hub layout.
  *
- * Weight files are SafeTensors format (model.safetensors).
- * Configuration is read from config.json which follows the NeMo format used
- * by the original parakeet-mlx Python project.
+ * The public loaders (`fromLocal` / `fromPretrained`) live in `./load.ts`, which
+ * builds a backend-agnostic `ParakeetModel` from these pieces.
  */
-import { BaseParakeet } from './parakeet.js';
+import type { WeightMap } from './nn.js';
 /**
- * Load a Parakeet model from a local directory.
+ * Parse a safetensors file and return a WeightMap.
+ * The safetensors format: 8 bytes (header length LE uint64) + JSON header + data.
+ * Uses fd-based random access to support files larger than the 2 GiB Buffer limit.
  */
-export declare function fromLocal(modelDir: string): BaseParakeet;
-/**
- * Load a Parakeet model from a HuggingFace Hub repo or local directory.
- *
- * @param hfIdOrPath - HuggingFace repo ID (e.g. "mlx-community/parakeet-tdt-0.6b-v3")
- *                     or local directory path.
- * @param options.cacheDir - Override default HF cache directory.
- * @param options.onProgress - Called with (downloaded, total) bytes during file downloads.
- */
-export declare function fromPretrained(hfIdOrPath: string, options?: {
-    cacheDir?: string;
-    onProgress?: (file: string, downloaded: number, total: number) => void;
-}): Promise<BaseParakeet>;
+export declare function loadSafetensors(filePath: string): WeightMap;
+export declare function downloadFromHub(repoId: string, filename: string, cacheDir?: string, onProgress?: (downloaded: number, total: number) => void): Promise<string>;
 //# sourceMappingURL=utils.d.ts.map

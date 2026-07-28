@@ -12,8 +12,6 @@ export declare class MultiHeadAttention extends Module {
     constructor(nHead: number, nFeat: number, bias?: boolean);
     forward(q: MxArray, k: MxArray, v: MxArray, posEmb: MxArray | null, mask: MxArray | null, cache: ConformerCache | null): MxArray;
     loadWeights(weights: WeightMap, prefix: string): void;
-    /** Copy the loaded parameters from another module of the same shape. */
-    copyWeightsFrom(other: MultiHeadAttention): void;
 }
 export declare class RelPositionMultiHeadAttention extends Module {
     linearQ: Linear;
@@ -30,8 +28,6 @@ export declare class RelPositionMultiHeadAttention extends Module {
     private relShift;
     forward(q: MxArray, k: MxArray, v: MxArray, posEmb: MxArray | null, mask: MxArray | null, cache: ConformerCache | null): MxArray;
     loadWeights(weights: WeightMap, prefix: string): void;
-    /** Copy the loaded parameters from another rel-pos module of the same shape. */
-    copyWeightsFrom(other: RelPositionMultiHeadAttention): void;
 }
 export declare class RelPositionMultiHeadLocalAttention extends RelPositionMultiHeadAttention {
     readonly contextSize: [number, number];

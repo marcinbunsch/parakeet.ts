@@ -9,8 +9,8 @@
  *   parakeet --stream < pcm_f32le_16k.raw
  */
 import { parseArgs } from 'node:util';
-import { fromPretrained } from './utils.js';
-import { consumePcmStream } from './parakeet.js';
+import { fromPretrained } from './load.js';
+import { consumePcmStream } from '../model.js';
 const DEFAULT_MODEL = 'mlx-community/parakeet-tdt-0.6b-v3';
 // ---------------------------------------------------------------------------
 // Arg parsing

@@ -15,7 +15,7 @@
  * Requires hono as a peer dependency: npm i hono @hono/node-server
  */
 import { Hono } from 'hono';
-import { consumePcmStream } from './parakeet.js';
+import { consumePcmStream } from '../model.js';
 const REQUIRED_CONTENT_TYPE = 'audio/pcm; rate=16000; channels=1; format=f32le';
 /**
  * Create a Hono sub-application with the Parakeet ASR routes.
