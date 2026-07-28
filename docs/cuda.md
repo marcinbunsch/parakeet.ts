@@ -4,283 +4,391 @@ Goal: run this library live on **both** a Mac (Apple Silicon) and a Linux box
 with an Nvidia RTX GPU, **without changing app code**. Same public API, same CLI,
 same server — the GPU work is swapped underneath by platform.
 
-Status: design + feasibility probe complete (2026-07-28). Nothing implemented
-yet. Claims marked **[verified]** below were measured on this box; claims marked
-**[unmeasured]** are still open.
+**Status (2026-07-28): validated end-to-end on an RTX 4060 Ti.** Parakeet TDT
+0.6b v3 transcribes on the GPU through ONNX Runtime with no MLX in the path.
+Everything below marked "measured" was run on this box; nothing in this doc is
+speculative unless it says so.
 
-## Chosen approach: abstract at the model boundary, offload CUDA to ONNX Runtime
+## Decision: MLX on Mac + ONNX Runtime on Linux
 
-We do **not** give this codebase a second tensor library. Instead we abstract at
-the **model boundary**. The library is not one monolithic graph; it's:
-
-1. Audio -> mel spectrogram — **already pure JS/CPU**
-2. **Encoder** (conformer) forward — the heavy compute
-3. A **decode loop** (TDT/RNNT greedy) that repeatedly calls the prediction
-   network (LSTM) and joint network -> logits -> argmax
-4. Logits -> tokens -> text — **tokenizer/alignment, already pure JS**
-
-Only steps 2 and 3 touch tensors. Everything else — mel front-end, greedy loop,
-argmax, tokenizer, alignment, CLI, server, streaming, mutex — is plain
-TypeScript and stays identical on both platforms.
-
-### The interface is two calls, not three
-
-An earlier draft of this doc proposed `encode` / `predict` / `joint`. That is
-wrong for the off-the-shelf ONNX exports: **prediction and joint are fused into
-a single `decoder_joint` graph** and cannot be split without re-exporting.
-
-```ts
-interface ParakeetBackend {
-  encode(mel):                        { data: Float32Array; shape: number[] }
-  decodeStep(encFrame, token, state): { logits, state }
-}
-```
-
-- `MlxBackend` — wraps `src/mlx/`. `decodeStep` fuses the existing
-  `PredictNetwork.forward` + `JointNetwork.forward`, which `rnnt.ts:178-186`
-  already calls back-to-back anyway.
-- `OnnxBackend` — two `ort.InferenceSession`s, CUDA EP on Linux.
-
-The LSTM state stays **opaque to the loop** — it's already passed straight
-through in `decodeTDTGreedy`, so it types cleanly as a backend-specific handle.
-
-The public API (`ParakeetTDT.transcribe`, streaming, `createParakeetRoutes`, the
-CLI) never changes. Backend is chosen at load time / auto-detected by platform.
-
-## Decision: MLX on Mac + ONNX on Linux
+Two backends, best performance on each:
 
 - **Mac** keeps the MLX/Metal path — fastest on Apple Silicon (unified memory).
 - **Linux** uses ONNX Runtime + CUDA EP.
 
-Cost: two backends to keep numerically in sync. Accepted for the performance
-win.
+This was originally a bet. It is now a measurement: mlx-node's CUDA backend does
+work, but it OOMs above ~45 s of audio and is ~3x slower than ONNX on the same
+GPU (see "Why not mlx-node's CUDA backend" below).
 
-## Verified: ONNX Runtime CUDA on this box
+## Architecture: abstract at the model boundary
 
-**[verified]** A plain `npm install onnxruntime-node` (v1.27.0) auto-downloads
-the CUDA EP for linux-x64 — `libonnxruntime_providers_cuda.so`, 252 MB, no
-install flags needed.
+We do **not** give this codebase a second tensor library. We abstract at the
+**model boundary**. The library is not one monolithic graph; it's:
 
-Its `NEEDED` list:
+1. Audio -> mel spectrogram — CPU
+2. **Encoder** (conformer) forward — the heavy compute
+3. A **decode loop** (TDT/RNNT greedy) that repeatedly calls the prediction
+   network (LSTM) and joint network -> logits -> argmax
+4. Logits -> tokens -> text — tokenizer/alignment, already pure TypeScript
+
+Only steps 2 and 3 touch tensors. Everything else — greedy loop, argmax,
+tokenizer, alignment, CLI, server, mutex — is plain TypeScript and stays
+identical on both platforms.
+
+### The backend interface is 2 calls, not 3
+
+An earlier draft of this doc proposed `encode` / `predict` / `joint`. That is
+wrong for ONNX: the pre-exported model **fuses prediction and joint into a
+single `decoder_joint` graph**, and it cannot be split without re-exporting.
+
+```
+encoder-model.onnx
+  in : audio_signal [1, 128, T_mel], length [1]
+  out: outputs [1, 1024, T], encoded_lengths [1]
+
+decoder_joint-model.onnx
+  in : encoder_outputs [1, 1024, 1], targets [1,1], target_length [1],
+       input_states_1 [2,1,640], input_states_2 [2,1,640]
+  out: outputs [1,1,1,8198], prednet_lengths [1],
+       output_states_1, output_states_2
+```
+
+So the interface is:
+
+```ts
+interface ParakeetBackend {
+  encode(mel):                        { data: Float32Array; shape: number[] }
+  decodeStep(encFrame, token, state): { logits: Float32Array; state: State }
+}
+```
+
+`MlxBackend` fuses its existing `predict` + `joint` behind one `decodeStep` —
+trivial, since `src/mlx/rnnt.ts` already calls them back-to-back. The LSTM state
+is opaque to the loop (it is only threaded through), so it types cleanly as a
+backend-specific handle.
+
+The decode loop itself barely changes: `decodeTDTGreedy` is already ~90% plain
+TypeScript. MLX appears in only four places — the per-step encoder slice, the
+token input, the two forwards, and `softmax(...).toFloat32()`.
+
+## Measured performance (RTX 4060 Ti, 75.5 s of audio, warm)
+
+| Config | Time | RTFx | Breakdown |
+|---|---|---|---|
+| **ONNX, encoder + decoder on CUDA** | **0.74 s** | **102x** | mel 326 ms · enc 166 ms · dec 223 ms |
+| ONNX, encoder CUDA + decoder CPU | 0.87 s | 87x | enc 155 ms · dec 363 ms |
+| ONNX, all CPU | 2.58 s | 29x | enc 1690 ms |
+
+The GPU gives roughly **10x on the encoder** (1690 ms -> 166 ms). Running the
+autoregressive decode loop on CUDA is modestly better than CPU (223 ms vs
+363 ms) despite ~591 individual `session.run` round trips.
+
+**The mel front-end is now the largest single cost (~44% of wall time).** The
+next optimization target is the front-end, not the GPU work.
+
+## Model assets — confirmed to match this checkpoint
+
+`istupakov/parakeet-tdt-0.6b-v3-onnx` (also mirrored under
+`altunenes/parakeet-rs/tdt/`), verified against the `config.json` this library
+already loads:
+
+| | local checkpoint | ONNX export |
+|---|---|---|
+| d_model | 1024 | `encoder_outputs` = 1024 |
+| pred_hidden / layers | 640 / 2 | states `[2, 1, 640]` |
+| vocab + blank + durations | 8192 + 1 + 5 | logits width **8198** |
+| features / subsampling | 128 / 8 | `features_size` 128, `subsampling_factor` 8 |
+
+Files: `encoder-model.onnx` (42 MB) + `encoder-model.onnx.data` (2.44 GB
+external data — the name must be preserved or ORT cannot resolve initializers),
+`decoder_joint-model.onnx` (72.5 MB), `vocab.txt` (8193 lines, blank at 8192),
+`nemo128.onnx` (INT8 preprocessor — **we do not use this**, see below).
+
+Decoding constants: durations `[0,1,2,3,4]`, blank id `8192`. The initial
+`targets` value is the blank id, whose embedding row is `padding_idx` and
+therefore zero — matching the MLX path's `lastToken = null` branch.
+
+## Parity: the divergence is the mel front-end, not the model
+
+The ONNX transcripts initially differed from MLX. Swapping front-ends against a
+fixed encoder isolates the cause:
+
+| Front-end | Encoder | sample-1 | sample-3 |
+|---|---|---|---|
+| `nemo128.onnx` (NVIDIA reference) | ONNX | "a go **then**" | "**uh**" |
+| this repo's mel | ONNX | "a go **in**" | "**um**" |
+| this repo's mel | MLX | "a go **in**" | "**um**" |
+
+Same mel in -> same transcript out, on all three fixtures. **The ONNX encoder
+and decoder_joint are numerically faithful to the MLX path.** A pure-JS port of
+the repo's mel matches the MLX original at correlation 0.9999999977
+(mean abs diff 5.3e-5) once degenerate bins are excluded.
+
+Therefore: **use this repo's own mel front-end on both platforms and drop
+`nemo128.onnx`.** That removes a dependency, removes an INT8 quantization step,
+and makes the two backends agree.
+
+### Known bug: 13 of 128 mel bins are dead
+
+`computeMelFilterbanks` in `src/mlx/audio.ts` (inherited from parakeet-mlx) maps
+mel points to FFT bins with `Math.floor(hz * (nFft + 1) / sr)`. At low
+frequencies consecutive points collapse onto the same bin, producing **13
+entirely all-zero filterbank rows** (mels 0,2,4,6,8,10,13,15,18,21,24,28,34).
+
+Those rows are constant `log(1e-5)` across time. Per-feature normalization then
+computes `(x - mean) / (std + 1e-5)` on a constant row — dividing ~0 by ~0 — so
+the output is pure float rounding noise, amplified to O(0.1). Different
+float32 reduction orders (MLX vs JS) produce different noise, and that noise is
+what flips knife-edge tokens between backends.
+
+A standard librosa/NeMo-style interpolated filterbank (triangles evaluated on
+continuous frequencies, no `floor`) leaves only 1 dead row, and with it the ONNX
+path converges *exactly* on NVIDIA's reference preprocessor output.
+
+**Consequence for the test suite:** `test/integration/transcribe.test.ts`
+expects "a go in" / "um" — which is what the *current, buggy* filterbank
+produces. The reference preprocessor yields "a go then" / "uh". Those fixtures
+record current MLX behaviour, not independent ground truth, so fixing the
+filterbank will change 2 of 3 expected transcripts. Decide deliberately before
+changing it.
+
+(That test also hardcodes a Mac-only HF snapshot path,
+`models--mlx-community--.../snapshots/<hash>`, so it cannot run on Linux, where
+the CLI's downloader uses a flat cache layout.)
+
+## Prerequisites on the Linux box — resolved
+
+`onnxruntime-node` 1.27.0 auto-installs the CUDA EP for linux-x64 on a plain
+`npm install` (252 MB `libonnxruntime_providers_cuda.so`). Its dependencies:
 
 ```
 libcudart.so.13  libcublas.so.13  libcublasLt.so.13  libnvrtc.so.13
 libcudnn.so.9    libcufft.so.12   libcurand.so.10    libcuda.so.1
 ```
 
-ORT **1.27 moved its default GPU build to CUDA 13 + cuDNN 9**, which happens to
-be exactly what the earlier MLX-CUDA build left on this box (`~/cuda-13` =
-13.0.2, `~/cudnn` = 9.25). With
+**ORT 1.27 switched its default GPU build to CUDA 13 + cuDNN 9.** ORT <= 1.26
+wants CUDA 12, so 1.27+ is required unless a CUDA 12 runtime is also installed.
+On this box `~/cuda-13` (13.0.2) and `~/cudnn` (9.25) satisfy all of it:
 
 ```
 LD_LIBRARY_PATH=$HOME/buildprefix/lib:$HOME/cuda-13/lib64
 ```
 
-**every dependency resolves — zero "not found".**
+The RTX card needs only a supported compute capability — ORT ships prebuilt
+CUDA kernels, so there is no per-arch compile and no `sm_XX` fight.
 
-This cuts both ways: **ORT <= 1.26 wants CUDA 12**, so we are pinned to >= 1.27
-unless we also install a CUDA 12 runtime.
+Packaging note: because the CUDA EP downloads by default, a Mac-only install
+should pass `--onnxruntime-node-install=skip`.
 
-Creating a CUDA session currently fails with exactly one error, and it is the
-known local driver issue, not an ORT problem:
+## Streaming
+
+### The existing MLX streaming path is broken on every platform
+
+Before comparing backends: `StreamingParakeet` does not currently work at all,
+and this is **not** CUDA- or Linux-specific.
+
+`transcribeStream()` defaults to `keepOriginalAttention = false`, which calls
+`encoder.setAttentionModel('rel_pos_local_attn', contextSize)`. In
+`src/mlx/conformer.ts:184`:
+
+```ts
+setAttentionModel(name, contextSize = [256, 256]): void {
+  const newAttn = this.buildAttention(name, contextSize);
+  // Copy weights from old attention if possible
+  // (In a real implementation we'd need to transfer parameters)
+  this.selfAttn = newAttn;
+}
+```
+
+It swaps in a **freshly constructed** attention module and never transfers the
+trained weights, so the first streaming update dies with
+`TypeError: Cannot read properties of undefined (reading 'transpose')` inside
+`RelPositionMultiHeadLocalAttention.forward`. That is a plain code gap (the
+comment says as much), independent of backend.
+
+Passing `keepOriginalAttention = true` avoids that path but hits a second,
+separate bug in the cached encoder: `[broadcast_shapes] Shapes (1,12,1024) and
+(1,8,1024) cannot be broadcast`.
+
+**Consequence:** there is no working streaming behaviour to preserve parity
+with. We are free to design streaming for correctness rather than to replicate
+the current MLX path, and the MLX streaming bugs need fixing on their own merits.
+
+### Chosen approach: sliding-window re-encode (measured, works today)
+
+The offline ONNX encoder exposes **no cache tensors** — its graph I/O is only
+`audio_signal`/`length` -> `outputs`/`encoded_lengths`. Rather than obtain a
+cache-aware graph, keep a bounded window of recent audio, re-encode it on each
+update, and re-decode from the last committed boundary. Tokens older than a
+`drop` margin are finalized; the tail is draft and may be revised.
+
+Measured on 60 s of audio fed in 1 s chunks, RTX 4060 Ti:
+
+| Window | Avg latency / update | p90 | Max | Headroom |
+|---|---|---|---|---|
+| 12 s | **98 ms** | 101 ms | 228 ms | ~10x real-time |
+| 24 s | 159 ms | 183 ms | 229 ms | ~6x |
+| 60 s (never slides) | 227 ms | 350 ms | 436 ms | ~4x |
+
+At a 12 s window the split is mel 61 ms, encoder 29 ms, decode 7 ms. **The mel
+front-end dominates streaming latency**, and the prototype recomputes it over
+the whole window every update — computing only the new frames incrementally
+should cut per-update latency roughly in half.
+
+Why this is the right choice here:
+
+- **No new model assets**, no NeMo export, no second checkpoint.
+- **Better quality than cache-aware local attention**, because the encoder sees
+  full bidirectional context within the window instead of a limited left/right
+  context the model was never trained for.
+- **It needs only `encode` + `decodeStep`** — the same 2-call backend interface
+  as batch transcription, with no cache type to abstract. So streaming becomes
+  backend-agnostic and works identically on MLX and ONNX, which also fixes the
+  MLX streaming hole.
+
+Cost: recompute. Each update re-encodes the whole window rather than only new
+frames. The measurements above show that is affordable by a wide margin.
+
+Known gap in the prototype: commit-boundary frame accounting is approximate and
+drops a segment near the start. This is engineering to finish, not a limitation
+of the approach — it reproduces identically with a non-sliding window, so it is
+the finalize/draft split, not the window movement.
+
+### Alternatives, if the window cost ever matters
+
+The checkpoint is fully non-causal, so cache-aware streaming is not a simple
+re-export:
 
 ```
-CUDA failure 804: forward compatibility was attempted on non supported HW
+self_attention_model  rel_pos          att_context_size    [-1, -1]
+att_context_style     regular          causal_downsampling False
+conv_context_size     None             conv_kernel_size    9
 ```
 
-Kernel module 580.159.03 vs userspace 580.173.02 — reboot-gated.
-**[unmeasured]** Everything GPU-side below is therefore verified only up to
-session creation; all timings are CPU EP.
+NeMo's cache-aware export path assumes `att_context_style: chunked_limited` plus
+causal downsampling.
 
-## Verified: the pre-exported model matches our checkpoint
+- **B. Custom NeMo cache-aware export** of this checkpoint with
+  `att_context_size` set. Precedent exists (parakeet-rs published cache-aware
+  graphs with `cache_last_channel` / `cache_last_time` /
+  `cache_last_channel_len`), but nobody has published one for
+  parakeet-tdt-0.6b-v3 — we would run the exporter ourselves, and the result is
+  an approximation the model was not trained for.
+- **C. A natively streaming checkpoint** such as
+  `nemotron-3.5-asr-streaming-0.6b` (cache-aware, `att_context_size [56, 6]`,
+  chunk 7 output frames). Ready-made and trained for streaming, but a different
+  vocab (13087) plus an extra `prompt_index` input, so transcripts would not
+  match the Mac path.
 
-`istupakov/parakeet-tdt-0.6b-v3-onnx` — `features_size: 128`,
-`subsampling_factor: 8`. Ran `decoder_joint-model.onnx` on CPU with shapes taken
-from our local `config.json`; correct on the first try:
+## Why not mlx-node's CUDA backend — measured
 
-| | local checkpoint | ONNX export |
+mlx-node's CUDA path *does* work: it builds from source for sm_89 and
+transcribes all three fixtures correctly. It was rejected on measurements:
+
+- **OOM ceiling around 45 s of audio.** 10 s -> 15x RTFx, 20 s -> 27x,
+  30 s -> 34x, then 60 s and 75 s die with
+  `cudaPeekAtLastError() failed: out of memory` on a 16 GB card. ONNX handles
+  75 s at 102x on the same GPU. (`transcribe()` does accept `chunkDuration` to
+  work around this; the CLI never passes it.)
+- **A separate bug at 45 s**: `[squeeze] Cannot squeeze axis 1 with size 0`.
+- **~3x slower** than ONNX at 30 s (34x vs 101x RTFx).
+
+It also needs two environment fixes that ONNX does not:
+
+1. `CUDA_HOME` / `CUDA_PATH` must point at the toolkit — MLX JIT-compiles
+   kernels through NVRTC and needs the headers at runtime.
+2. CUDA 13 moved the CCCL headers under `include/cccl/`. nvcc adds that path
+   automatically; NVRTC does not, so JIT fails with
+   `cannot open source file "cuda/std/tuple"`. Fixed with additive symlinks:
+   `cd $CUDA_HOME/targets/x86_64-linux/include && ln -s cccl/cuda cuda`
+   (likewise `cub`, `thrust`).
+
+ORT sidesteps all of this and reuses NVIDIA's own tuned kernels.
+
+## Implementation status
+
+Built and verified on this box:
+
+| Module | What it is |
+|---|---|
+| `src/backend.ts` | `ParakeetBackend` — `encode` + `decodeStep`, plus `EncoderLayout` so each backend reports its own memory order instead of paying for a transpose |
+| `src/audio.ts` | Shared mel front-end, pure TypeScript, no tensor library |
+| `src/decode.ts` | Shared greedy TDT / RNN-T loops over typed arrays |
+| `src/model.ts` | `ParakeetModel` + `StreamingParakeet` — no tensor code at all |
+| `src/onnx/backend.ts` | `OnnxBackend`, lazy `onnxruntime-node` import, CUDA EP |
+| `src/onnx/parakeet.ts` | Loader for exported ONNX graphs |
+| `src/mlx/backend.ts` | `MlxBackend` — adapts the existing MLX modules to the same interface |
+| `src/mlx/load.ts` | Loads a safetensors checkpoint into `ParakeetModel` |
+
+Both loaders return the **same** `ParakeetModel`:
+
+```ts
+import { fromLocal } from 'parakeet.ts/onnx';   // ONNX Runtime, CUDA on Linux
+import { loadModel } from 'parakeet.ts/mlx';    // MLX, Apple Silicon
+
+const model = await fromLocal('/path/to/onnx-model', { executionProvider: 'cuda' });
+const result = await model.transcribe('audio.wav');
+const stream = model.transcribeStream({ windowSeconds: 12 });
+```
+
+**Verified:** feeding identical features through both backends produces
+byte-identical transcripts on all three fixtures — via the internal interface
+and via the public API. Streaming, word timestamps, and chunked long-form
+transcription all work on the ONNX/CUDA path.
+
+`onnxruntime-node` is an `optionalDependency`, so a Mac-only install never pulls
+the CUDA libraries. Note pnpm blocks its postinstall by default; the repo now
+sets `pnpm.onlyBuiltDependencies` so the CUDA EP is actually fetched.
+
+### Backwards compatibility, and the filterbank default
+
+The original `ParakeetTDT` / `ParakeetRNNT` / `ParakeetCTC` classes and the CLI
+are **untouched** and still use the MLX front-end, so existing behaviour and the
+current test fixtures are preserved ("a go in", "um").
+
+The new shared path defaults to `filterbank: 'interpolated'`, because it is both
+correct and self-consistent:
+
+| Front-end | Backends agree? | sample-1 |
 |---|---|---|
-| d_model | 1024 | `encoder_outputs` = 1024 |
-| pred_hidden / rnn layers | 640 / 2 | states `[2, 1, 640]` |
-| vocab + blank + durations | 8192 + 1 + 5 | logits width **8198** |
+| `floor` (legacy MLX front-end, float noise in dead bins) | no — noise differs per backend | "a go in" |
+| `floor` (shared, deterministic zeros in dead bins) | yes | "a go **golven**" |
+| `interpolated` (NeMo reference) | yes | "a go then" |
 
-Graph I/O:
+The middle row is what makes the case: with the collapsed filterbank the model
+emits the non-word "golven", and the only reason the legacy MLX path avoids it
+is float rounding noise landing favourably. Pass `{ filterbank: 'floor' }` to
+either loader to reproduce the legacy features exactly.
 
-```
-encoder:       audio_signal [1,128,T], length  ->  outputs [1,1024,T/8], encoded_lengths
-decoder_joint: encoder_outputs [1,1024,1], targets, target_length,
-               input_states_1/2 [2,1,640]
-            -> outputs [1,1,1,8198], prednet_lengths, output_states_1/2
-```
+### Remaining work
 
-Note the encoder output is **channel-first** `[B, D, T]`, and `decoder_joint`
-takes a single frame sliced along the last axis.
+- Fix the two MLX streaming bugs (`setAttentionModel` weight transfer, and the
+  conv-cache shape mismatch) or retire `StreamingParakeet` in `src/mlx/` in
+  favour of the shared sliding-window implementation.
+- Make the streaming mel incremental — it currently recomputes the whole window
+  each update and is ~60% of per-update latency.
+- Decide whether to migrate the legacy classes and the CLI onto `ParakeetModel`,
+  which would mean updating the test fixtures to the interpolated filterbank.
+- Fetch ONNX weights from HuggingFace rather than requiring a local directory.
 
-## Verified: the decode loop is cheap enough to stay on CPU
+## Reproducing
 
-**[verified]** `decoder_joint` on the CPU EP averages **0.46 ms/step**. For 10 s
-of audio (~125 encoder frames, ~250 TDT steps) that is ~115 ms total. The
-encoder is the part worth offloading; keeping the autoregressive loop on CPU
-avoids a GPU round-trip per token. Worth benchmarking both ways once CUDA runs.
-
-## Streaming — the one real gap
-
-The off-the-shelf ONNX encoder has **no cache tensors**: `audio_signal`,
-`length` in; `outputs`, `encoded_lengths` out. But `StreamingParakeet`
-(`src/mlx/parakeet.ts:476`) depends on per-layer `RotatingConformerCache`
-threaded into `encoder.forward(mel, null, cache)`.
-
-Important context: our Mac streaming is **not** a cache-aware *model*. It is the
-offline model coerced at runtime — `setAttentionModel('rel_pos_local_attn',
-contextSize)` (`parakeet.ts:522`) plus a rotating KV/conv cache. The checkpoint
-config confirms it was never trained for this:
+Probe artifacts live in `~/parakeet-ortprobe/` (3.0 GB, models re-fetchable):
 
 ```
-self_attention_model  rel_pos      att_context_size     [-1, -1]
-att_context_style     regular      causal_downsampling  False
-conv_context_size     None         conv_kernel_size     9
+cd ~/parakeet-ortprobe
+LD_LIBRARY_PATH=$HOME/buildprefix/lib:$HOME/cuda-13/lib64 EP=cuda node run2.mjs <file.wav>
 ```
 
-Fully non-causal, full context. So MLX streaming is already an approximation. We
-are not preserving a gold standard — we need a *usable* streaming path.
-
-### Option A — sliding-window re-encode (recommended)
-
-No cache at all. Keep a rolling audio/mel buffer, re-run the whole encoder on
-the trailing window each tick, reuse the existing finalized/draft split.
-
-**[verified]** Real encoder ONNX, CPU EP only, i7-13700KF / 24 threads:
-
-| window | encoder time | RTFx |
-|---|---|---|
-| 0.5 s | 46.6 ms | 10.7 |
-| 1 s | 50.1 ms | 20.0 |
-| 2 s | 60.6 ms | 33.0 |
-| 5 s | 103.3 ms | 48.4 |
-| 10 s | 180.2 ms | 55.5 |
-| 20 s | 363.1 ms | 55.1 |
-
-~40 ms fixed overhead + ~16 ms per second of audio. A 10 s window re-encoded
-every 500 ms costs **180 ms per 500 ms tick — 36% of the real-time budget on CPU
-alone**, before any GPU. Dynamic axes work down to 0.5 s (50 mel frames -> 7
-output frames).
-
-The strategic payoff: **sliding-window streaming needs only `encode()`.** No
-cache tensors in the backend interface, so streaming behaves identically on MLX
-and ONNX and Mac/Linux transcripts converge instead of diverging.
-`RotatingConformerCache` becomes an optional MLX-only fast path, or goes away.
-
-Cost: recompute, and higher per-tick latency than true cache streaming. Quality
-is arguably *better* than local-attn — the window gets full attention, closer to
-offline behaviour.
-
-### Option B — export our checkpoint cache-aware via NeMo
-
-Run NeMo's exporter with streaming params set, producing `cache_last_channel` /
-`cache_last_time` / `cache_last_channel_len` graph I/O. Closest to today's MLX
-semantics.
-
-Risk: NeMo's cache-aware path expects `att_context_style: chunked_limited` +
-`causal_downsampling: True` + causal conv context. Our checkpoint is `regular` /
-non-causal on all three, so we'd be forcing the export machinery onto a model
-shape it wasn't written for — and cache-aware ONNX export has a history of
-dimension-mismatch and latency bugs (NeMo issues #6381, #5867). Also needs a
-Python/NeMo toolchain this project doesn't have. Doable, but it reintroduces the
-"uncertain payoff" the ONNX route was meant to eliminate.
-
-Keep in reserve if Option A's per-tick latency proves too high in practice.
-
-### Option C — ship a natively-streaming model on Linux
-
-`altunenes/parakeet-rs` has a ready-made cache-aware streaming export.
-**[verified]** graph I/O:
-
-```
-in:  processed_signal, processed_signal_length, prompt_index,
-     cache_last_channel [24,1,56,1024], cache_last_time [24,1,1024,8],
-     cache_last_channel_len [1]
-out: encoded, encoded_len, cache_last_channel_next, cache_last_time_next,
-     cache_last_channel_len_next
-```
-
-`att_context_size [56, 6]`, `chunk_size_output_frames: 7`, 24 layers x 1024 —
-same architecture class as ours. Best actual streaming *quality*, since it is
-trained for limited context.
-
-But it is `nemotron-asr-streaming-multilingual-0.6b`: **vocab 13087 vs our
-8192**, plus a `prompt_index` language-conditioning input we have no equivalent
-for. Different tokenizer, different transcripts, a second model to ship, and
-Mac/Linux parity is gone. Only worth it if streaming latency/quality outranks
-cross-platform sameness.
-
-### Option D — MLX-CUDA for the streaming path only
-
-We already have this built (see note at the end). But it means two GPU stacks on
-one box, two sets of CUDA libs, and the fragile source build back on the
-critical path. Hard to justify given Option A's numbers.
-
-## Work involved
-
-1. **Define `ParakeetBackend`** (the 2-call interface above) and route the
-   decode loops (`src/mlx/rnnt.ts`, `ctc.ts`) through it. Smaller than it looks:
-   `decodeTDTGreedy` is already ~90% plain TS — argmax, entropy/confidence,
-   duration stepping, `maxSymbols`, alignment all operate on plain numbers. MLX
-   touches only four spots: the per-step encoder slice, the token input, the two
-   forwards, and `softmax(...).toFloat32()`. Note the loop only commits hidden
-   state on non-blank emission — that logic is loop-level and stays
-   backend-agnostic.
-2. **`MlxBackend`** — thin wrapper over current `src/mlx/` modules.
-3. **`OnnxBackend`** — two `ort.InferenceSession`s fed/returning `Float32Array`
-   + shape. CUDA EP on Linux. ONNX returns logits, so `softmax` moves to plain
-   JS (argmax is invariant under it, but the entropy-based confidence needs
-   probabilities).
-4. **Model assets** — **done, confirmed matching** (see table above). Fetch from
-   HF alongside the existing safetensors.
-5. **Backend selection** — pick by platform at load, with an override.
-6. **Streaming** — implement Option A generically on top of `encode()`.
-7. **Parity check** — diff transcripts: MLX-on-Mac vs ONNX-on-Linux vs ONNX-CPU.
-8. **Packaging** — `onnxruntime-node` as an optional/peer dep. Note the 252 MB
-   CUDA EP downloads **by default**, so Mac-only installs want
-   `--onnxruntime-node-install=skip`. `ffmpeg` audio is already cross-platform.
-
-## Prerequisites on the Linux box (for ONNX + CUDA)
-
-- `onnxruntime-node` **>= 1.27** (CUDA 13 + cuDNN 9). Earlier versions need
-  CUDA 12 instead.
-- CUDA 13.x runtime + cuDNN 9.x on `LD_LIBRARY_PATH`. Already satisfied here by
-  `~/cuda-13` and `~/buildprefix/lib` from the MLX build.
-- Nvidia driver whose **loaded kernel module matches the installed userspace**.
-  This box has unattended-upgrades enabled and drifts; a reboot resyncs it.
-- The RTX card only needs a supported compute capability — no per-arch compile,
-  ORT ships prebuilt CUDA kernels.
-
-## Note: mlx-node's CUDA backend
-
-mlx-node's CUDA path is an early proof-of-concept (device-agnostic eager
-fallbacks, no tuned kernels, validated on ARM64 GB10/DGX Spark, no x86_64
-prebuilt -> source build required).
-
-We **did** build it successfully on this box for the RTX 4060 Ti (sm_89) — the
-addon loads and MLX brings up its CUDA backend. But it cost a full source build:
-`MLX_CUDA_ARCHITECTURES=89`, a hand-assembled CUDA/cuDNN/BLAS prefix, a rustc
-upgrade, and a 113 MB hand-copied `.node` artifact. ORT sidesteps all of that
-and reuses NVIDIA's mature CUDA kernels, so it remains the preferred Linux path.
-The MLX-CUDA build stays available as a fallback (Option D).
-
-## Reproducing the probe
-
-Probe artifacts live in the session scratchpad `ortprobe/`:
-`encoder-model.onnx` + `.data`, `dj.onnx`, `stream_enc.onnx`, and the
-`enc.mjs` / `dj.mjs` benchmarks. Re-run them against the CUDA EP after a driver
-reboot to fill in the **[unmeasured]** GPU numbers. The external-data file must
-keep its original name (`encoder-model.onnx.data`) or ORT fails to resolve
-initializers.
+`run2.mjs` is the zero-MLX pipeline, `mel.mjs` the pure-JS front-end,
+`melcmp*.mjs` the parity harnesses. `EP` / `DEC_EP` select execution providers;
+`MEL_FB=interp` switches to the interpolated filterbank.
 
 ## Sources
 
 - onnx-asr (Parakeet via ONNX Runtime): https://github.com/istupakov/onnx-asr
-- Parakeet TDT v3 ONNX: https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx
-- Streaming/cache-aware exports: https://huggingface.co/altunenes/parakeet-rs
+- Parakeet TDT v3 ONNX export: https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx
+- Cache-aware streaming ONNX exports: https://huggingface.co/altunenes/parakeet-rs
 - ONNX Runtime CUDA EP matrix: https://onnxruntime.ai/docs/execution-providers/CUDA-ExecutionProvider.html
 - ONNX Runtime Node.js: https://onnxruntime.ai/docs/get-started/with-javascript/node.html
 - NVIDIA NeMo (reference Parakeet, ONNX export): https://github.com/NVIDIA/NeMo
