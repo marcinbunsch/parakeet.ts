@@ -209,6 +209,13 @@ export class StreamingParakeet {
     combined.set(pcm, this.audio.length);
     this.audio = combined;
 
+    // Not enough audio yet for a single subsampled encoder frame. Running the
+    // front-end / encoder on a sub-frame window aborts natively (e.g. "[squeeze]
+    // Cannot squeeze axis 1 with size 0") and cannot be caught in JS — keep
+    // buffering until a later call has enough. Harmless for normal chunk sizes.
+    const minSamples = this.model.preprocessorConfig.nFft + this.samplesPerFrame;
+    if (this.audio.length < minSamples) return;
+
     // Trim in whole encoder frames so absolute frame accounting stays exact.
     const spf = this.samplesPerFrame;
     if (this.audio.length > this.windowSamples) {
