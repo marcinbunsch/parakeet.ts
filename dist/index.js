@@ -7,6 +7,10 @@
 //   import { fromLocal } from 'parakeet.ts/mlx';    // MLX (Apple Silicon)
 //
 // Both return the same `ParakeetModel`.
+// Zero-config entry point: picks the backend for this platform and fetches the
+// model on first use.
+export { load, detectBackend, DEFAULT_MODELS } from './load.js';
+export { downloadFromHub, downloadRepoFiles, defaultCacheDir, repoDir } from './hub.js';
 export { ParakeetModel, StreamingParakeet, consumePcmStream } from './model.js';
 export { decodeTDTGreedy, decodeRNNTGreedy } from './decode.js';
 export { getLogMel, loadAudioRaw, getWindow, makePreprocessArgs, computeMelFilterbanks, computeMelFilterbanksInterpolated, } from './audio.js';

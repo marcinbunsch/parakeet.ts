@@ -9,6 +9,7 @@ import path from 'node:path';
 import { OnnxBackend, OnnxBackendOptions, ExecutionProvider } from './backend.js';
 import { ParakeetModel } from '../model.js';
 import { makePreprocessArgs } from '../audio.js';
+import { downloadRepoFiles } from '../hub.js';
 
 export interface OnnxModelOptions {
   executionProvider?: ExecutionProvider;
@@ -140,4 +141,45 @@ export async function fromLocal(
   return new ParakeetModel({
     backend, preprocessor, vocabulary, durations, maxSymbols, subsamplingFactor,
   });
+}
+
+/** Default ONNX export on the Hub, matching the checkpoint the MLX path loads. */
+export const DEFAULT_ONNX_REPO = 'istupakov/parakeet-tdt-0.6b-v3-onnx';
+
+export interface OnnxPretrainedOptions extends OnnxModelOptions {
+  /** Override the HF cache root. */
+  cacheDir?: string;
+  /** Called as each file downloads. */
+  onProgress?: (file: string, downloaded: number, total: number) => void;
+}
+
+/**
+ * Load an ONNX Parakeet model, downloading it from the HuggingFace Hub on first
+ * use and caching it under the standard HF cache directory.
+ *
+ * `hfIdOrPath` may also be a local directory, in which case it is used as-is.
+ */
+export async function fromPretrained(
+  hfIdOrPath: string = DEFAULT_ONNX_REPO,
+  options: OnnxPretrainedOptions = {},
+): Promise<ParakeetModel> {
+  if (fs.existsSync(hfIdOrPath) && fs.statSync(hfIdOrPath).isDirectory()) {
+    return fromLocal(hfIdOrPath, options);
+  }
+
+  const dir = await downloadRepoFiles(
+    hfIdOrPath,
+    [
+      { name: 'encoder-model.onnx' },
+      // external weights: required for this export, absent for self-contained ones
+      { name: 'encoder-model.onnx.data', optional: true },
+      { name: 'decoder_joint-model.onnx' },
+      { name: 'vocab.txt' },
+      { name: 'config.json', optional: true },
+    ],
+    options.cacheDir,
+    options.onProgress,
+  );
+
+  return fromLocal(dir, options);
 }

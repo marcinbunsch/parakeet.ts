@@ -2,14 +2,13 @@
  * Low-level model-loading helpers for the MLX backend.
  *
  *  - `loadSafetensors` parses a SafeTensors weight file into a WeightMap.
- *  - `downloadFromHub` fetches a single file from the HuggingFace CDN with an
- *    optional progress callback, caching it under the HF hub layout.
+ *  - `downloadFromHub` is re-exported from `../hub.ts` for backwards
+ *    compatibility; the implementation is backend-agnostic.
  *
  * The public loaders (`fromLocal` / `fromPretrained`) live in `./load.ts`, which
  * builds a backend-agnostic `ParakeetModel` from these pieces.
  */
 import fs from 'node:fs';
-import path from 'node:path';
 /**
  * Parse a safetensors file and return a WeightMap.
  * The safetensors format: 8 bytes (header length LE uint64) + JSON header + data.
@@ -98,53 +97,7 @@ function f16ToF32(buf) {
     return out;
 }
 // ---------------------------------------------------------------------------
-// HuggingFace Hub download
+// HuggingFace Hub download — implementation lives in ../hub.ts (backend-agnostic)
 // ---------------------------------------------------------------------------
-export async function downloadFromHub(repoId, filename, cacheDir, onProgress) {
-    const effectiveCacheDir = cacheDir ?? path.join(process.env['HOME'] ?? '/tmp', '.cache', 'huggingface', 'hub');
-    const modelDir = path.join(effectiveCacheDir, repoId.replace('/', '--'));
-    fs.mkdirSync(modelDir, { recursive: true });
-    const localPath = path.join(modelDir, filename);
-    if (fs.existsSync(localPath)) {
-        return localPath;
-    }
-    // Download directly from HuggingFace CDN (Node 18+ has built-in fetch)
-    const url = `https://huggingface.co/${repoId}/resolve/main/${filename}`;
-    const response = await fetch(url, {
-        headers: { 'User-Agent': 'parakeet.ts/1.0.0' },
-    });
-    if (!response.ok) {
-        throw new Error(`Failed to download ${url}: ${response.status} ${response.statusText}`);
-    }
-    const total = parseInt(response.headers.get('content-length') ?? '0', 10);
-    if (onProgress && response.body) {
-        // Stream with progress reporting
-        const tmpPath = `${localPath}.tmp`;
-        const writeStream = fs.createWriteStream(tmpPath);
-        let downloaded = 0;
-        const reader = response.body.getReader();
-        try {
-            for (;;) {
-                const { done, value } = await reader.read();
-                if (done)
-                    break;
-                writeStream.write(value);
-                downloaded += value.byteLength;
-                onProgress(downloaded, total);
-            }
-        }
-        finally {
-            reader.releaseLock();
-        }
-        await new Promise((resolve, reject) => {
-            writeStream.end((err) => (err ? reject(err) : resolve()));
-        });
-        fs.renameSync(tmpPath, localPath);
-    }
-    else {
-        const arrayBuffer = await response.arrayBuffer();
-        fs.writeFileSync(localPath, Buffer.from(arrayBuffer));
-    }
-    return localPath;
-}
+export { downloadFromHub } from '../hub.js';
 //# sourceMappingURL=utils.js.map

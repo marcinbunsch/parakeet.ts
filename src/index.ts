@@ -8,6 +8,13 @@
 //
 // Both return the same `ParakeetModel`.
 
+// Zero-config entry point: picks the backend for this platform and fetches the
+// model on first use.
+export { load, detectBackend, DEFAULT_MODELS } from './load.js';
+export type { LoadOptions, BackendKind } from './load.js';
+
+export { downloadFromHub, downloadRepoFiles, defaultCacheDir, repoDir } from './hub.js';
+
 export { ParakeetModel, StreamingParakeet, consumePcmStream } from './model.js';
 export type { ParakeetModelArgs, TranscribeOptions, StreamOptions } from './model.js';
 

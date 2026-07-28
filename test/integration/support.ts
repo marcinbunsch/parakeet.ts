@@ -15,7 +15,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import os from "node:os"
-import { loadAudioRaw } from "../../src/index.js"
+import { loadAudioRaw, repoDir, DEFAULT_MODELS } from "../../src/index.js"
 import type { ParakeetModel } from "../../src/index.js"
 
 export type BackendName = "mlx" | "onnx"
@@ -122,9 +122,17 @@ function findMlxDir(): string | null {
   return null
 }
 
+/**
+ * Where the ONNX export lives. Normally this is just the HF cache, populated by
+ * `load()` on first use — PARAKEET_ONNX_DIR only exists to point at a custom
+ * location. Tests never download: if the model isn't cached yet they skip,
+ * matching how the MLX side behaves.
+ */
 function findOnnxDir(): string | null {
   const env = process.env["PARAKEET_ONNX_DIR"] ?? process.env["PARAKEET_ONNX_MODEL"]
-  return env ?? null
+  if (env) return env
+  const cached = repoDir(DEFAULT_MODELS.onnx)
+  return fs.existsSync(cached) ? cached : null
 }
 
 function hasOnnxExports(dir: string | null): dir is string {
@@ -162,7 +170,7 @@ async function resolveBackend(): Promise<TestBackend> {
     name: "onnx",
     canRun: hasOnnxExports(dir) && !!load && runtimeOk,
     reason: !dir
-      ? "PARAKEET_ONNX_DIR unset"
+      ? "ONNX model not cached (run load() once, or set PARAKEET_ONNX_DIR)"
       : !hasOnnxExports(dir) ? "ONNX exports missing"
       : !runtimeOk ? "onnxruntime-node not loadable" : undefined,
     make: async () => load!(dir as string, { filterbank: "interpolated" }),

@@ -26,4 +26,19 @@ export interface OnnxModelOptions {
  *   config.json               (optional; a full NeMo config supplies preprocessor settings)
  */
 export declare function fromLocal(dir: string, options?: OnnxModelOptions): Promise<ParakeetModel>;
+/** Default ONNX export on the Hub, matching the checkpoint the MLX path loads. */
+export declare const DEFAULT_ONNX_REPO = "istupakov/parakeet-tdt-0.6b-v3-onnx";
+export interface OnnxPretrainedOptions extends OnnxModelOptions {
+    /** Override the HF cache root. */
+    cacheDir?: string;
+    /** Called as each file downloads. */
+    onProgress?: (file: string, downloaded: number, total: number) => void;
+}
+/**
+ * Load an ONNX Parakeet model, downloading it from the HuggingFace Hub on first
+ * use and caching it under the standard HF cache directory.
+ *
+ * `hfIdOrPath` may also be a local directory, in which case it is used as-is.
+ */
+export declare function fromPretrained(hfIdOrPath?: string, options?: OnnxPretrainedOptions): Promise<ParakeetModel>;
 //# sourceMappingURL=parakeet.d.ts.map
