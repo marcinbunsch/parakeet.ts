@@ -1,0 +1,7 @@
+# onnxruntime-node ships a native build we want on Linux (CUDA EP) but skip on
+# machines using the MLX backend. That "ignored build" otherwise makes pnpm
+# abort `pnpm run` via ERR_PNPM_IGNORED_BUILDS, so don't gate script runs on it.
+verifyDepsBeforeRun: false
+
+onlyBuiltDependencies:
+  - onnxruntime-node

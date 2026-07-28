@@ -7,21 +7,22 @@
  * one test that would catch the ONNX encoder or decoder_joint drifting away from
  * the MLX reference (or a front-end change silently affecting only one path).
  *
- * It needs all three of:
+ * It needs all of:
  *   - the MLX safetensors checkpoint cached (mlx-community/parakeet-tdt-0.6b-v3),
  *   - a directory of ONNX exports in PARAKEET_ONNX_DIR (encoder-model.onnx +
  *     decoder_joint-model.onnx + vocab.txt),
- *   - a working onnxruntime-node (its native lib, CUDA EP on Linux).
- * so it runs on the Linux/CUDA box and skips elsewhere (e.g. on a Mac where the
- * onnxruntime-node native build was not installed).
+ *   - both native backends loadable (@mlx-node/core and onnxruntime-node).
+ * so it runs on a box that has both backends (the Linux/CUDA machine) and skips
+ * everywhere else. Backend modules are imported dynamically so a machine missing
+ * one native library skips this test instead of failing to load it.
  */
 import { describe, it, expect, beforeAll } from "vitest"
 import fs from "node:fs"
 import path from "node:path"
 import os from "node:os"
-import { fromLocal as mlxFromLocal } from "../../src/mlx/index.js"
-import { fromLocal as onnxFromLocal } from "../../src/onnx/index.js"
 import type { ParakeetModel } from "../../src/model.js"
+
+type LoadFn = (dir: string, opts: { filterbank: "interpolated" }) => ParakeetModel | Promise<ParakeetModel>
 
 function findMlxDir(): string | null {
   const base = path.join(
@@ -43,25 +44,29 @@ function hasOnnxExports(dir: string | null): dir is string {
   return enc && dec
 }
 
-const MLX_DIR = findMlxDir()
-const ONNX_DIR = process.env["PARAKEET_ONNX_DIR"] ?? null
-
-// onnxruntime-node loads a native library; on a Mac dev box its build is often
-// skipped, so importing it throws. Treat that as "ONNX backend unavailable".
-let ONNX_RUNTIME_OK = false
+// Load both backends dynamically; either native lib being absent (e.g. no
+// onnxruntime-node build on a Mac, no @mlx-node/core on a plain Linux box) turns
+// this into a skip rather than a hard import failure.
+let mlxFromLocal: LoadFn | null = null
+let onnxFromLocal: LoadFn | null = null
 try {
+  mlxFromLocal = (await import("../../src/mlx/index.js")).fromLocal as LoadFn
+  onnxFromLocal = (await import("../../src/onnx/index.js")).fromLocal as LoadFn
   await import("onnxruntime-node")
-  ONNX_RUNTIME_OK = true
 } catch {
-  ONNX_RUNTIME_OK = false
+  mlxFromLocal = null
+  onnxFromLocal = null
 }
 
-const CAN_RUN = !!MLX_DIR && hasOnnxExports(ONNX_DIR) && ONNX_RUNTIME_OK
+const MLX_DIR = findMlxDir()
+const ONNX_DIR = process.env["PARAKEET_ONNX_DIR"] ?? null
+const CAN_RUN = !!MLX_DIR && hasOnnxExports(ONNX_DIR) && !!mlxFromLocal && !!onnxFromLocal
+
 if (!CAN_RUN) {
   // eslint-disable-next-line no-console
   console.warn(
     "backend-parity.test: needs the MLX checkpoint, PARAKEET_ONNX_DIR with ONNX " +
-    "exports, and a working onnxruntime-node; skipping.",
+    "exports, and both native backends loadable; skipping.",
   )
 }
 
@@ -77,8 +82,8 @@ d("backend parity (MLX vs ONNX)", () => {
   beforeAll(async () => {
     // Same interpolated front-end on both sides, so the mel fed to each encoder
     // is identical by construction; any divergence is the encoder/decoder graph.
-    mlx = mlxFromLocal(MLX_DIR as string, { filterbank: "interpolated" })
-    onnx = await onnxFromLocal(ONNX_DIR as string, { filterbank: "interpolated" })
+    mlx = await mlxFromLocal!(MLX_DIR as string, { filterbank: "interpolated" })
+    onnx = await onnxFromLocal!(ONNX_DIR as string, { filterbank: "interpolated" })
   })
 
   for (const file of SAMPLES) {
