@@ -16,9 +16,9 @@ Two backends, best performance on each:
 - **Mac** keeps the MLX/Metal path — fastest on Apple Silicon (unified memory).
 - **Linux** uses ONNX Runtime + CUDA EP.
 
-This was originally a bet. It is now a measurement: mlx-node's CUDA backend does
-work, but it OOMs above ~45 s of audio and is ~3x slower than ONNX on the same
-GPU (see "Why not mlx-node's CUDA backend" below).
+Each platform uses its native accelerator path and nothing else: **MLX never
+runs on Linux, ONNX/CUDA never runs on a Mac.** Cross-backend parity is checked
+by comparing recorded transcripts, not by running both stacks on one machine.
 
 ## Architecture: abstract at the model boundary
 
@@ -78,6 +78,9 @@ token input, the two forwards, and `softmax(...).toFloat32()`.
 | **ONNX, encoder + decoder on CUDA** | **0.74 s** | **102x** | mel 326 ms · enc 166 ms · dec 223 ms |
 | ONNX, encoder CUDA + decoder CPU | 0.87 s | 87x | enc 155 ms · dec 363 ms |
 | ONNX, all CPU | 2.58 s | 29x | enc 1690 ms |
+
+The ONNX path holds roughly 3.7 GB of VRAM, so it shares a 16 GB card with other
+workloads without trouble.
 
 The GPU gives roughly **10x on the encoder** (1690 ms -> 166 ms). Running the
 autoregressive decode loop on CUDA is modestly better than CPU (223 ms vs
@@ -280,18 +283,24 @@ causal downsampling.
   vocab (13087) plus an extra `prompt_index` input, so transcripts would not
   match the Mac path.
 
-## Why not mlx-node's CUDA backend — measured
+## Why not mlx-node's CUDA backend
 
-mlx-node's CUDA path *does* work: it builds from source for sm_89 and
-transcribes all three fixtures correctly. It was rejected on measurements:
+**The split is by policy: MLX is the Apple Silicon backend, ONNX Runtime is the
+Linux/Nvidia backend.** mlx-node's CUDA path is not used on Linux and is not
+maintained as an option there.
 
-- **OOM ceiling around 45 s of audio.** 10 s -> 15x RTFx, 20 s -> 27x,
-  30 s -> 34x, then 60 s and 75 s die with
-  `cudaPeekAtLastError() failed: out of memory` on a 16 GB card. ONNX handles
-  75 s at 102x on the same GPU. (`transcribe()` does accept `chunkDuration` to
-  work around this; the CLI never passes it.)
-- **A separate bug at 45 s**: `[squeeze] Cannot squeeze axis 1 with size 0`.
-- **~3x slower** than ONNX at 30 s (34x vs 101x RTFx).
+mlx-node's CUDA build does work — it compiles from source for sm_89 and
+transcribes the fixtures correctly — but it is the wrong tool here: it requires
+a from-source build with `sm_XX` pinning, JIT-compiles kernels at runtime, and
+carries the environment caveats below, whereas ORT ships prebuilt CUDA kernels.
+
+> Earlier revisions of this doc quoted specific mlx-node OOM ceilings ("fails
+> above ~45 s") and a 3x speed gap. **Those numbers were taken while unrelated
+> workloads held ~9.5 GB of the 16 GB card**, leaving under 6 GB free, so they
+> measured memory contention rather than mlx-node itself. They have been removed
+> rather than re-measured, since the backend split is settled by policy. For
+> reference, the ONNX path needs roughly 3.7 GB and ran unaffected under the
+> same contention.
 
 It also needs two environment fixes that ONNX does not:
 
